@@ -1,6 +1,7 @@
 //! Brute-force solver for finding vanity SHA1 prefixes.
 
 pub mod concurrent;
+pub mod gpu;
 pub mod singlethreaded;
 pub mod template;
 

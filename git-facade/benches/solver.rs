@@ -5,6 +5,7 @@ use sha1::{Digest, Sha1};
 
 use git_facade::commit::parse_git_commit_object;
 use git_facade::solver::concurrent::ConcurrentSolver;
+use git_facade::solver::gpu::GpuSolver;
 use git_facade::solver::singlethreaded::SingleThreadedSolver;
 use git_facade::solver::template::prepare_template;
 use git_facade::solver::DigestPrefixSolver;
@@ -64,6 +65,26 @@ fn bench_solver_concurrent(c: &mut Criterion) {
     });
 }
 
+/// Benchmarks the GPU solver finding a 2-byte prefix.
+fn bench_solver_gpu(c: &mut Criterion) {
+    let gpu_solver = match GpuSolver::new() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("skipping GPU benchmark (no adapter): {}", e);
+            return;
+        }
+    };
+
+    let obj = parse_git_commit_object(RAW_HEADER_AND_BODY_OBJECT.as_bytes()).unwrap();
+    let tpl = prepare_template(&obj).unwrap();
+
+    c.bench_function("solver_gpu", |b| {
+        b.iter(|| {
+            gpu_solver.solve(&tpl, &[0x88, 0x70]).unwrap();
+        });
+    });
+}
+
 #[allow(missing_docs, clippy::missing_docs_in_private_items)]
 mod group {
     use super::*;
@@ -73,6 +94,7 @@ mod group {
         bench_sha1_incremental,
         bench_solver_singlethreaded,
         bench_solver_concurrent,
+        bench_solver_gpu,
     );
 }
 

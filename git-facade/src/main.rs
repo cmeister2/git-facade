@@ -8,6 +8,7 @@ use git_facade::commit::parse_git_commit_object;
 use git_facade::digest::HexObjectDigest;
 use git_facade::git;
 use git_facade::solver::concurrent::ConcurrentSolver;
+use git_facade::solver::gpu::GpuSolver;
 use git_facade::solver::singlethreaded::SingleThreadedSolver;
 use git_facade::solver::template::prepare_template;
 use git_facade::solver::DigestPrefixSolver;
@@ -112,9 +113,10 @@ fn main() {
 fn get_solver(name: &str) -> Result<Box<dyn DigestPrefixSolver>, String> {
     match name {
         "concurrent" => Ok(Box::new(ConcurrentSolver::new())),
+        "gpu" => Ok(Box::new(GpuSolver::new()?)),
         "singlethreaded" => Ok(Box::new(SingleThreadedSolver::new())),
         _ => Err(format!(
-            "unknown solver {:?}, available: concurrent, singlethreaded",
+            "unknown solver {:?}, available: concurrent, gpu, singlethreaded",
             name
         )),
     }
