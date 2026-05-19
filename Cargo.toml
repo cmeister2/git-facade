@@ -1,36 +1,3 @@
-[package]
-name = "git-facade"
-version = "0.0.0-semantic-release"
-edition = "2021"
-description = "Git commit vanity hash solver"
-license = "MIT"
-repository = "https://github.com/cmeister2/git-facade"
-keywords = ["git", "vanity", "hash", "sha1"]
-categories = ["command-line-utilities", "development-tools"]
-exclude = ["renovate.json", ".github/", "node_modules/", "package.json", "package-lock.json", "release.config.js", "publish.sh"]
-
-[[bin]]
-name = "git-facade"
-path = "src/main.rs"
-
-[dependencies]
-clap = { version = "4", features = ["derive"] }
-hex = "0.4"
-rayon = "1"
-sha1 = "0.10"
-
-[dev-dependencies]
-tempfile = "3"
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[[bench]]
-name = "solver"
-harness = false
-
-[lints.rust]
-missing_docs = "deny"
-
-[lints.clippy]
-missing_docs_in_private_items = "deny"
-missing_errors_doc = "deny"
-missing_panics_doc = "deny"
+[workspace]
+members = ["git-facade", "wgpu-sha1"]
+resolver = "2"
