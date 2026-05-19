@@ -40,6 +40,48 @@ impl ObjectTemplate {
     pub fn payload(&self) -> &[u8] {
         &self.bytes[self.payload_offset..]
     }
+
+    /// Creates an [`IncrementalHasher`] that precomputes SHA1 state for all
+    /// blocks before the salt, so each attempt only hashes the tail.
+    pub fn incremental_hasher(&self) -> IncrementalHasher {
+        IncrementalHasher::new(self)
+    }
+}
+
+/// SHA1 block size in bytes.
+const SHA1_BLOCK_SIZE: usize = 64;
+
+/// Precomputed SHA1 state that avoids rehashing bytes before the salt block.
+#[derive(Clone)]
+pub struct IncrementalHasher {
+    /// SHA1 state after processing all complete blocks before the salt.
+    prefix_state: Sha1,
+    /// Byte offset where the suffix (remaining blocks) starts.
+    suffix_start: usize,
+}
+
+impl IncrementalHasher {
+    /// Creates a new incremental hasher from a template.
+    fn new(template: &ObjectTemplate) -> Self {
+        let suffix_start = (template.salt_offset / SHA1_BLOCK_SIZE) * SHA1_BLOCK_SIZE;
+        let mut hasher = Sha1::new();
+        hasher.update(&template.bytes[..suffix_start]);
+        Self {
+            prefix_state: hasher,
+            suffix_start,
+        }
+    }
+
+    /// Computes the SHA1 digest by cloning the prefix state and hashing
+    /// only the remaining bytes (the block containing the salt + everything after).
+    pub fn sum(&self, template: &ObjectTemplate) -> ObjectDigest {
+        let mut hasher = self.prefix_state.clone();
+        hasher.update(&template.bytes[self.suffix_start..]);
+        let hash = hasher.finalize();
+        let mut digest = [0u8; 20];
+        digest.copy_from_slice(&hash);
+        ObjectDigest(digest)
+    }
 }
 
 /// Writes a u64 as 16 hex characters into `dst`.
@@ -294,5 +336,37 @@ mod tests {
         // The full object should be "commit <len>\0" + payload
         let expected_full = format!("commit {}\x00{}", expected_payload.len(), expected_payload);
         assert_eq!(tpl.bytes, expected_full.as_bytes());
+    }
+
+    #[test]
+    fn test_incremental_matches_full_hash() {
+        let obj = parse_git_commit_object(RAW_HEADER_AND_BODY_OBJECT.as_bytes()).unwrap();
+        let mut tpl = prepare_template(&obj).unwrap();
+        let hasher = tpl.incremental_hasher();
+
+        for salt in 0..1000 {
+            tpl.set_salt(salt);
+            let full = tpl.sum();
+            let incremental = hasher.sum(&tpl);
+            assert_eq!(
+                full, incremental,
+                "mismatch at salt {}: full={} incremental={}",
+                salt, full, incremental
+            );
+        }
+    }
+
+    #[test]
+    fn test_incremental_hasher_suffix_start() {
+        let obj = parse_git_commit_object(RAW_HEADER_AND_BODY_OBJECT.as_bytes()).unwrap();
+        let tpl = prepare_template(&obj).unwrap();
+        let hasher = tpl.incremental_hasher();
+
+        // suffix_start should be aligned to 64-byte block boundary
+        assert_eq!(hasher.suffix_start % SHA1_BLOCK_SIZE, 0);
+        // suffix_start should be <= salt_offset
+        assert!(hasher.suffix_start <= tpl.salt_offset);
+        // suffix_start should be within one block of salt_offset
+        assert!(tpl.salt_offset - hasher.suffix_start < SHA1_BLOCK_SIZE);
     }
 }

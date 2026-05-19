@@ -42,9 +42,10 @@ impl SingleThreadedSolver {
 impl DigestPrefixSolver for SingleThreadedSolver {
     fn solve(&self, template: &ObjectTemplate, prefix: &[u8]) -> Result<CommitObject, SolverError> {
         let mut tpl = template.clone();
+        let hasher = tpl.incremental_hasher();
         for salt in self.salt_start..self.salt_end {
             tpl.set_salt(salt);
-            let digest = tpl.sum();
+            let digest = hasher.sum(&tpl);
 
             if has_prefix(&digest, prefix) {
                 let hex_digest = hex_encode_digest(&digest);

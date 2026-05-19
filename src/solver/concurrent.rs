@@ -43,13 +43,14 @@ impl DigestPrefixSolver for ConcurrentSolver {
             let end = start.saturating_add(CHUNK_SIZE);
 
             let mut tpl = template.clone();
+            let hasher = tpl.incremental_hasher();
             for salt in start..end {
                 if found.load(Ordering::Relaxed) {
                     return None;
                 }
 
                 tpl.set_salt(salt);
-                let digest = tpl.sum();
+                let digest = hasher.sum(&tpl);
 
                 if has_prefix(&digest, prefix) {
                     found.store(true, Ordering::Relaxed);
