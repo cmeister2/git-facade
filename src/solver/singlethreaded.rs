@@ -40,11 +40,7 @@ impl SingleThreadedSolver {
 }
 
 impl DigestPrefixSolver for SingleThreadedSolver {
-    fn solve(
-        &self,
-        template: &ObjectTemplate,
-        prefix: &[u8],
-    ) -> Result<CommitObject, SolverError> {
+    fn solve(&self, template: &ObjectTemplate, prefix: &[u8]) -> Result<CommitObject, SolverError> {
         let mut tpl = template.clone();
         for salt in self.salt_start..self.salt_end {
             tpl.set_salt(salt);

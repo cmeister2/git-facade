@@ -74,3 +74,11 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --check
+
+  success:
+    name: Success
+    needs: [check-release, test, clippy, fmt]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Success
+        run: echo "All jobs passed"

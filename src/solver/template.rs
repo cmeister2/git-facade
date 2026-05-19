@@ -292,8 +292,7 @@ mod tests {
         assert_eq!(payload, expected_payload);
 
         // The full object should be "commit <len>\0" + payload
-        let expected_full =
-            format!("commit {}\x00{}", expected_payload.len(), expected_payload);
+        let expected_full = format!("commit {}\x00{}", expected_payload.len(), expected_payload);
         assert_eq!(tpl.bytes, expected_full.as_bytes());
     }
 }

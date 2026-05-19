@@ -17,15 +17,27 @@ use git_facade::solver::DigestPrefixSolver;
 #[command(name = "git-facade", about = "Git commit vanity hash solver")]
 struct Cli {
     /// Also update the current HEAD revision.
-    #[arg(long, default_value_t = false, help = "Also update the current HEAD revision")]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Also update the current HEAD revision"
+    )]
     update_ref: bool,
 
     /// A hex prefix to find a collision for.
-    #[arg(long, default_value = "c0ffee", help = "A hex prefix to find a collision for")]
+    #[arg(
+        long,
+        default_value = "c0ffee",
+        help = "A hex prefix to find a collision for"
+    )]
     prefix: String,
 
     /// The solver to use for brute-forcing.
-    #[arg(long, default_value = "concurrent", help = "The solver to use for brute-forcing")]
+    #[arg(
+        long,
+        default_value = "concurrent",
+        help = "The solver to use for brute-forcing"
+    )]
     solver: String,
 }
 
@@ -158,7 +170,10 @@ mod tests {
 
     #[test]
     fn test_hex_string_to_bytes_valid() {
-        assert_eq!(hex_string_to_bytes("c0ffee").unwrap(), vec![0xc0, 0xff, 0xee]);
+        assert_eq!(
+            hex_string_to_bytes("c0ffee").unwrap(),
+            vec![0xc0, 0xff, 0xee]
+        );
         assert_eq!(hex_string_to_bytes("00").unwrap(), vec![0x00]);
         assert_eq!(hex_string_to_bytes("ff").unwrap(), vec![0xff]);
         assert_eq!(hex_string_to_bytes("cafe").unwrap(), vec![0xca, 0xfe]);

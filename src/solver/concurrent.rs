@@ -29,11 +29,7 @@ impl ConcurrentSolver {
 }
 
 impl DigestPrefixSolver for ConcurrentSolver {
-    fn solve(
-        &self,
-        template: &ObjectTemplate,
-        prefix: &[u8],
-    ) -> Result<CommitObject, SolverError> {
+    fn solve(&self, template: &ObjectTemplate, prefix: &[u8]) -> Result<CommitObject, SolverError> {
         let found = Arc::new(AtomicBool::new(false));
 
         let num_chunks = (u64::MAX / CHUNK_SIZE) + 1;
