@@ -11,7 +11,7 @@ struct Params {
     batch_size: u32,
     salt_base_lo: u32,
     salt_base_hi: u32,
-    _pad0: u32,
+    total_len_bytes: u32,
     _pad1: u32,
 }
 
@@ -23,7 +23,7 @@ struct FindResult {
 
 @group(0) @binding(0) var<storage, read> template_data: array<u32>;
 @group(0) @binding(1) var<uniform> params: Params;
-@group(0) @binding(2) var<storage, read> prefix_data: array<u32>;
+@group(0) @binding(2) var<storage, read> aux_data: array<u32>;
 @group(0) @binding(3) var<storage, read_write> result: FindResult;
 @group(0) @binding(4) var<storage, read_write> debug_digests: array<u32>;
 
@@ -44,16 +44,9 @@ fn sha1_f2(b: u32, c: u32, d: u32) -> u32 {
 }
 
 fn sha1_compress(state: ptr<function, array<u32, 5>>, block: ptr<function, array<u32, 16>>) {
-    var w: array<u32, 80>;
-
-    // Load the 16 message words
+    var schedule: array<u32, 16>;
     for (var i = 0u; i < 16u; i++) {
-        w[i] = (*block)[i];
-    }
-
-    // Expand to 80 words
-    for (var i = 16u; i < 80u; i++) {
-        w[i] = rotl(w[i - 3u] ^ w[i - 8u] ^ w[i - 14u] ^ w[i - 16u], 1u);
+        schedule[i] = (*block)[i];
     }
 
     var a = (*state)[0];
@@ -62,9 +55,9 @@ fn sha1_compress(state: ptr<function, array<u32, 5>>, block: ptr<function, array
     var d = (*state)[3];
     var e = (*state)[4];
 
-    // Rounds 0-19
     for (var i = 0u; i < 20u; i++) {
-        let temp = rotl(a, 5u) + sha1_f0(b, c, d) + e + 0x5A827999u + w[i];
+        let wt = schedule_word(&schedule, i);
+        let temp = rotl(a, 5u) + sha1_f0(b, c, d) + e + 0x5A827999u + wt;
         e = d;
         d = c;
         c = rotl(b, 30u);
@@ -72,9 +65,9 @@ fn sha1_compress(state: ptr<function, array<u32, 5>>, block: ptr<function, array
         a = temp;
     }
 
-    // Rounds 20-39
     for (var i = 20u; i < 40u; i++) {
-        let temp = rotl(a, 5u) + sha1_f1(b, c, d) + e + 0x6ED9EBA1u + w[i];
+        let wt = schedule_word(&schedule, i);
+        let temp = rotl(a, 5u) + sha1_f1(b, c, d) + e + 0x6ED9EBA1u + wt;
         e = d;
         d = c;
         c = rotl(b, 30u);
@@ -82,9 +75,9 @@ fn sha1_compress(state: ptr<function, array<u32, 5>>, block: ptr<function, array
         a = temp;
     }
 
-    // Rounds 40-59
     for (var i = 40u; i < 60u; i++) {
-        let temp = rotl(a, 5u) + sha1_f2(b, c, d) + e + 0x8F1BBCDCu + w[i];
+        let wt = schedule_word(&schedule, i);
+        let temp = rotl(a, 5u) + sha1_f2(b, c, d) + e + 0x8F1BBCDCu + wt;
         e = d;
         d = c;
         c = rotl(b, 30u);
@@ -92,9 +85,9 @@ fn sha1_compress(state: ptr<function, array<u32, 5>>, block: ptr<function, array
         a = temp;
     }
 
-    // Rounds 60-79
     for (var i = 60u; i < 80u; i++) {
-        let temp = rotl(a, 5u) + sha1_f1(b, c, d) + e + 0xCA62C1D6u + w[i];
+        let wt = schedule_word(&schedule, i);
+        let temp = rotl(a, 5u) + sha1_f1(b, c, d) + e + 0xCA62C1D6u + wt;
         e = d;
         d = c;
         c = rotl(b, 30u);
@@ -109,117 +102,116 @@ fn sha1_compress(state: ptr<function, array<u32, 5>>, block: ptr<function, array
     (*state)[4] += e;
 }
 
+fn schedule_word(schedule: ptr<function, array<u32, 16>>, round: u32) -> u32 {
+    let slot = round & 15u;
+    if round >= 16u {
+        (*schedule)[slot] = rotl(
+            (*schedule)[(round - 3u) & 15u] ^
+            (*schedule)[(round - 8u) & 15u] ^
+            (*schedule)[(round - 14u) & 15u] ^
+            (*schedule)[slot],
+            1u
+        );
+    }
+    return (*schedule)[slot];
+}
+
 // Hex lookup table as an array
 const HEX_TABLE: array<u32, 16> = array<u32, 16>(
     0x30u, 0x31u, 0x32u, 0x33u, 0x34u, 0x35u, 0x36u, 0x37u,
     0x38u, 0x39u, 0x61u, 0x62u, 0x63u, 0x64u, 0x65u, 0x66u
 );
 
-// Get a byte from the template data (stored as big-endian u32 words)
-fn get_template_byte(byte_idx: u32) -> u32 {
+fn salt_hex_byte(salt_lo: u32, salt_hi: u32, idx: u32) -> u32 {
+    if idx < 8u {
+        let nibble = (salt_hi >> (28u - idx * 4u)) & 0xFu;
+        return HEX_TABLE[nibble];
+    }
+
+    let nibble = (salt_lo >> (28u - (idx - 8u) * 4u)) & 0xFu;
+    return HEX_TABLE[nibble];
+}
+
+fn write_block_byte(block: ptr<function, array<u32, 16>>, byte_idx: u32, value: u32) {
     let word_idx = byte_idx / 4u;
     let byte_pos = byte_idx % 4u;
-    let word = template_data[word_idx];
-    // Bytes stored in big-endian order within each u32
-    return (word >> (24u - byte_pos * 8u)) & 0xFFu;
+    let shift = 24u - byte_pos * 8u;
+    (*block)[word_idx] = ((*block)[word_idx] & ~(0xFFu << shift)) | ((value & 0xFFu) << shift);
 }
 
-// Write the hex encoding of a u64 salt (16 ASCII hex chars) into a byte array at offset
-fn write_salt_bytes(data: ptr<function, array<u32, 256>>, salt_lo: u32, salt_hi: u32, offset: u32) {
-    // 16 hex chars: hi word provides chars 0-7, lo word provides chars 8-15
-    for (var i = 0u; i < 8u; i++) {
-        let nibble = (salt_hi >> (28u - i * 4u)) & 0xFu;
-        let byte_idx = offset + i;
-        let word_idx = byte_idx / 4u;
-        let byte_pos = byte_idx % 4u;
-        let shift = 24u - byte_pos * 8u;
-        (*data)[word_idx] = ((*data)[word_idx] & ~(0xFFu << shift)) | (HEX_TABLE[nibble] << shift);
-    }
-    for (var i = 0u; i < 8u; i++) {
-        let nibble = (salt_lo >> (28u - i * 4u)) & 0xFu;
-        let byte_idx = offset + 8u + i;
-        let word_idx = byte_idx / 4u;
-        let byte_pos = byte_idx % 4u;
-        let shift = 24u - byte_pos * 8u;
-        (*data)[word_idx] = ((*data)[word_idx] & ~(0xFFu << shift)) | (HEX_TABLE[nibble] << shift);
+fn patch_salt_in_block(block: ptr<function, array<u32, 16>>, block_start: u32, salt_lo: u32, salt_hi: u32) {
+    for (var i = 0u; i < 16u; i++) {
+        let salt_pos = params.salt_offset_bytes + i;
+        if salt_pos >= block_start && salt_pos < block_start + 64u {
+            write_block_byte(block, salt_pos - block_start, salt_hex_byte(salt_lo, salt_hi, i));
+        }
     }
 }
 
-fn sha1_of_template(salt_lo: u32, salt_hi: u32) -> array<u32, 5> {
-    let total_bytes = params.template_len_bytes;
-
-    // Copy template into private memory as big-endian u32 words
-    let num_words = (total_bytes + 3u) / 4u;
-    var data: array<u32, 256>; // max 1024 bytes
-    for (var i = 0u; i < num_words; i++) {
-        data[i] = template_data[i];
-    }
-
-    // Write salt hex encoding into the template
-    write_salt_bytes(&data, salt_lo, salt_hi, params.salt_offset_bytes);
-
-    // SHA1 init
-    var state: array<u32, 5> = array<u32, 5>(
-        0x67452301u, 0xEFCDAB89u, 0x98BADCFEu, 0x10325476u, 0xC3D2E1F0u
+fn load_prefix_state(offset: u32) -> array<u32, 5> {
+    return array<u32, 5>(
+        aux_data[offset + 0u],
+        aux_data[offset + 1u],
+        aux_data[offset + 2u],
+        aux_data[offset + 3u],
+        aux_data[offset + 4u]
     );
+}
 
-    // Process complete 64-byte blocks
-    let full_blocks = total_bytes / 64u;
+fn sha1_of_template(salt_lo: u32, salt_hi: u32, prefix_state_offset: u32) -> array<u32, 5> {
+    let suffix_bytes = params.template_len_bytes;
+    var state = load_prefix_state(prefix_state_offset);
+
+    let full_blocks = suffix_bytes / 64u;
     for (var b = 0u; b < full_blocks; b++) {
         var block: array<u32, 16>;
         let base = b * 16u;
         for (var i = 0u; i < 16u; i++) {
-            block[i] = data[base + i];
+            block[i] = template_data[base + i];
         }
+        patch_salt_in_block(&block, b * 64u, salt_lo, salt_hi);
         sha1_compress(&state, &block);
     }
 
-    // Handle the final (possibly partial) block + padding
-    let remaining = total_bytes - full_blocks * 64u;
+    let remaining = suffix_bytes - full_blocks * 64u;
     let remaining_words_start = full_blocks * 16u;
 
-    // Build the padded final block(s)
-    // We need to append: 0x80 byte, zeros, 64-bit big-endian bit count
-    // If remaining <= 55, fits in one block. Otherwise need two blocks.
     var final_block: array<u32, 16>;
     for (var i = 0u; i < 16u; i++) {
         final_block[i] = 0u;
     }
 
-    // Copy remaining bytes (as u32 words)
     let remaining_full_words = remaining / 4u;
     for (var i = 0u; i < remaining_full_words; i++) {
-        final_block[i] = data[remaining_words_start + i];
+        final_block[i] = template_data[remaining_words_start + i];
     }
 
-    // Handle partial last word + 0x80 byte
     let leftover_bytes = remaining % 4u;
-    if leftover_bytes == 0u {
-        // 0x80 goes at the start of the next word
-        final_block[remaining_full_words] = 0x80000000u;
-    } else {
-        // Copy the partial word and insert 0x80
-        var partial = data[remaining_words_start + remaining_full_words];
+    if leftover_bytes != 0u {
+        var partial = template_data[remaining_words_start + remaining_full_words];
         let mask = 0xFFFFFFFFu << ((4u - leftover_bytes) * 8u);
-        partial = partial & mask;
-        partial = partial | (0x80u << ((3u - leftover_bytes) * 8u));
-        final_block[remaining_full_words] = partial;
+        final_block[remaining_full_words] = partial & mask;
     }
 
-    let bit_count = total_bytes * 8u;
+    patch_salt_in_block(&final_block, full_blocks * 64u, salt_lo, salt_hi);
+    let padding_shift = 24u - leftover_bytes * 8u;
+    final_block[remaining_full_words] = final_block[remaining_full_words] | (0x80u << padding_shift);
+
+    let bit_count_low = params.total_len_bytes << 3u;
+    let bit_count_high = params.total_len_bytes >> 29u;
 
     if remaining <= 55u {
-        // Everything fits in one block
-        final_block[15] = bit_count;
+        final_block[14] = bit_count_high;
+        final_block[15] = bit_count_low;
         sha1_compress(&state, &final_block);
     } else {
-        // Need two blocks
         sha1_compress(&state, &final_block);
         var extra_block: array<u32, 16>;
         for (var i = 0u; i < 16u; i++) {
             extra_block[i] = 0u;
         }
-        extra_block[15] = bit_count;
+        extra_block[14] = bit_count_high;
+        extra_block[15] = bit_count_low;
         sha1_compress(&state, &extra_block);
     }
 
@@ -231,7 +223,7 @@ fn check_prefix(state: array<u32, 5>) -> bool {
     // Compare full u32 words first
     let full_words = prefix_len / 4u;
     for (var i = 0u; i < full_words; i++) {
-        if state[i] != prefix_data[i] {
+        if state[i] != aux_data[i] {
             return false;
         }
     }
@@ -239,7 +231,7 @@ fn check_prefix(state: array<u32, 5>) -> bool {
     let leftover = prefix_len % 4u;
     if leftover > 0u {
         let mask = 0xFFFFFFFFu << ((4u - leftover) * 8u);
-        if (state[full_words] & mask) != (prefix_data[full_words] & mask) {
+        if (state[full_words] & mask) != (aux_data[full_words] & mask) {
             return false;
         }
     }
@@ -265,7 +257,8 @@ fn find_prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
         salt_hi += 1u;  // carry
     }
 
-    let state = sha1_of_template(salt_lo, salt_hi);
+    let prefix_state_offset = (params.prefix_len + 3u) / 4u;
+    let state = sha1_of_template(salt_lo, salt_hi, prefix_state_offset);
 
     if check_prefix(state) {
         // Atomic CAS to claim the result
@@ -280,13 +273,15 @@ fn find_prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
 @compute @workgroup_size(1)
 fn compute_digest(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
+    if idx >= params.batch_size {
+        return;
+    }
 
-    // Salt is passed as pairs in prefix_data for this entry point:
-    // prefix_data[idx*2] = salt_lo, prefix_data[idx*2+1] = salt_hi
-    let salt_lo = prefix_data[idx * 2u];
-    let salt_hi = prefix_data[idx * 2u + 1u];
+    let salt_lo = aux_data[idx * 2u];
+    let salt_hi = aux_data[idx * 2u + 1u];
 
-    let state = sha1_of_template(salt_lo, salt_hi);
+    let prefix_state_offset = params.batch_size * 2u;
+    let state = sha1_of_template(salt_lo, salt_hi, prefix_state_offset);
 
     let base = idx * 5u;
     debug_digests[base + 0u] = state[0];

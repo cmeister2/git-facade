@@ -50,6 +50,15 @@ fn make_test_template() -> (Vec<u8>, usize) {
     (data, salt_offset)
 }
 
+fn make_offset_template(total_len: usize, salt_offset: usize) -> Vec<u8> {
+    assert!(salt_offset + 16 <= total_len);
+    let mut data: Vec<u8> = (0..total_len)
+        .map(|i| b'a' + ((i * 17 + total_len) % 26) as u8)
+        .collect();
+    data[salt_offset..salt_offset + 16].copy_from_slice(b"0000000000000000");
+    data
+}
+
 #[test]
 fn test_sha1_parity_with_template() {
     let gpu = match GpuSha1::new() {
@@ -82,6 +91,55 @@ fn test_sha1_parity_with_template() {
             hex::encode(cpu_digest),
             hex::encode(gpu_digest),
         );
+    }
+}
+
+#[test]
+fn test_sha1_parity_varied_salt_offsets() {
+    let gpu = match GpuSha1::new() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("skipping GPU test (no adapter): {}", e);
+            return;
+        }
+    };
+
+    let test_salts: &[u64] = &[0, 1, 0x0123456789abcdef, u64::MAX];
+    let cases = [
+        (40, 0),
+        (70, 1),
+        (100, 60),
+        (120, 63),
+        (120, 64),
+        (150, 124),
+        (190, 130),
+        (276, 191),
+    ];
+
+    for (total_len, salt_offset) in cases {
+        let template_bytes = make_offset_template(total_len, salt_offset);
+        let gpu_template = GpuTemplate::from_bytes(&template_bytes, salt_offset);
+
+        let gpu_digests = gpu
+            .compute_digests(&gpu_template, test_salts)
+            .expect("GPU compute_digests failed");
+
+        for (i, &salt) in test_salts.iter().enumerate() {
+            let full_bytes = make_template_with_salt(&template_bytes, salt_offset, salt);
+            let cpu_digest = cpu_sha1(&full_bytes);
+            let gpu_digest = gpu_digests[i];
+
+            assert_eq!(
+                cpu_digest,
+                gpu_digest,
+                "SHA1 mismatch at len {}, offset {}, salt {:#x}:\n  CPU: {}\n  GPU: {}",
+                total_len,
+                salt_offset,
+                salt,
+                hex::encode(cpu_digest),
+                hex::encode(gpu_digest),
+            );
+        }
     }
 }
 

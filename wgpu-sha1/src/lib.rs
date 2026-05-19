@@ -44,7 +44,7 @@ impl std::error::Error for GpuError {}
 struct Params {
     /// Byte offset where the 16-char hex salt starts in the template.
     salt_offset_bytes: u32,
-    /// Total byte length of the template.
+    /// Byte length of the suffix stored in `template_data`.
     template_len_bytes: u32,
     /// Number of prefix bytes to match.
     prefix_len: u32,
@@ -54,8 +54,8 @@ struct Params {
     salt_base_lo: u32,
     /// High 32 bits of the starting salt value.
     salt_base_hi: u32,
-    /// Padding for 16-byte alignment.
-    _pad0: u32,
+    /// Total byte length of the original message before suffix extraction.
+    total_len_bytes: u32,
     /// Padding for 16-byte alignment.
     _pad1: u32,
 }
@@ -74,12 +74,16 @@ struct FindResultData {
 
 /// A precomputed GPU-ready template.
 pub struct GpuTemplate {
-    /// Template bytes packed as big-endian u32 words.
+    /// Suffix bytes packed as big-endian u32 words.
     words: Vec<u32>,
-    /// Byte offset where the salt region starts.
+    /// Byte offset where the salt region starts within the suffix.
     salt_offset_bytes: u32,
-    /// Total byte count of the template.
+    /// Byte count of the suffix stored in `words`.
+    suffix_bytes: u32,
+    /// Total byte count of the original template.
     total_bytes: u32,
+    /// SHA1 state after compressing all full blocks before the suffix.
+    prefix_state: [u32; 5],
 }
 
 impl GpuTemplate {
@@ -87,11 +91,16 @@ impl GpuTemplate {
     ///
     /// The salt is a 16-character hex region starting at `salt_offset`.
     pub fn from_bytes(data: &[u8], salt_offset: usize) -> Self {
-        let words = bytes_to_be_words(data);
+        let suffix_start = (salt_offset / 64) * 64;
+        let prefix_state = sha1_prefix_state(&data[..suffix_start]);
+        let suffix = &data[suffix_start..];
+        let words = bytes_to_be_words(suffix);
         Self {
             words,
-            salt_offset_bytes: salt_offset as u32,
+            salt_offset_bytes: (salt_offset - suffix_start) as u32,
+            suffix_bytes: suffix.len() as u32,
             total_bytes: data.len() as u32,
+            prefix_state,
         }
     }
 }
@@ -255,15 +264,17 @@ impl GpuSha1 {
         batch_size: u32,
     ) -> Result<Option<FindResult>, GpuError> {
         let prefix_words = bytes_to_be_words(prefix);
+        let mut prefix_and_state = prefix_words;
+        prefix_and_state.extend_from_slice(&template.prefix_state);
 
         let params = Params {
             salt_offset_bytes: template.salt_offset_bytes,
-            template_len_bytes: template.total_bytes,
+            template_len_bytes: template.suffix_bytes,
             prefix_len: prefix.len() as u32,
             batch_size,
             salt_base_lo: salt_base as u32,
             salt_base_hi: (salt_base >> 32) as u32,
-            _pad0: 0,
+            total_len_bytes: template.total_bytes,
             _pad1: 0,
         };
 
@@ -286,8 +297,8 @@ impl GpuSha1 {
         let prefix_buf = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("prefix"),
-                contents: bytemuck::cast_slice(&prefix_words),
+                label: Some("prefix_and_state"),
+                contents: bytemuck::cast_slice(&prefix_and_state),
                 usage: wgpu::BufferUsages::STORAGE,
             });
 
@@ -404,15 +415,17 @@ impl GpuSha1 {
             .iter()
             .flat_map(|&s| [s as u32, (s >> 32) as u32])
             .collect();
+        let mut salts_and_state = salt_pairs;
+        salts_and_state.extend_from_slice(&template.prefix_state);
 
         let params = Params {
             salt_offset_bytes: template.salt_offset_bytes,
-            template_len_bytes: template.total_bytes,
+            template_len_bytes: template.suffix_bytes,
             prefix_len: 0,
             batch_size: num_salts as u32,
             salt_base_lo: 0,
             salt_base_hi: 0,
-            _pad0: 0,
+            total_len_bytes: template.total_bytes,
             _pad1: 0,
         };
 
@@ -435,8 +448,8 @@ impl GpuSha1 {
         let salts_buf = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("salts_as_prefix"),
-                contents: bytemuck::cast_slice(&salt_pairs),
+                label: Some("salts_and_state"),
+                contents: bytemuck::cast_slice(&salts_and_state),
                 usage: wgpu::BufferUsages::STORAGE,
             });
 
@@ -541,6 +554,67 @@ fn bytes_to_be_words(data: &[u8]) -> Vec<u32> {
         .chunks(4)
         .map(|chunk| u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect()
+}
+
+/// Returns the initial SHA1 state words.
+fn sha1_initial_state() -> [u32; 5] {
+    [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0]
+}
+
+/// Computes the SHA1 state after all complete prefix blocks.
+fn sha1_prefix_state(prefix_blocks: &[u8]) -> [u32; 5] {
+    debug_assert_eq!(prefix_blocks.len() % 64, 0);
+    let mut state = sha1_initial_state();
+    for block in prefix_blocks.chunks_exact(64) {
+        sha1_compress_cpu(&mut state, block);
+    }
+    state
+}
+
+/// Compresses one 64-byte SHA1 block into `state`.
+fn sha1_compress_cpu(state: &mut [u32; 5], block: &[u8]) {
+    debug_assert_eq!(block.len(), 64);
+
+    let mut schedule = [0u32; 80];
+    for (word, bytes) in schedule.iter_mut().take(16).zip(block.chunks_exact(4)) {
+        *word = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    }
+    for i in 16..80 {
+        schedule[i] = (schedule[i - 3] ^ schedule[i - 8] ^ schedule[i - 14] ^ schedule[i - 16])
+            .rotate_left(1);
+    }
+
+    let mut a = state[0];
+    let mut b = state[1];
+    let mut c = state[2];
+    let mut d = state[3];
+    let mut e = state[4];
+
+    for (i, &word) in schedule.iter().enumerate() {
+        let (round_fn, constant) = match i {
+            0..=19 => ((b & c) | ((!b) & d), 0x5A827999),
+            20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+            40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+            _ => (b ^ c ^ d, 0xCA62C1D6),
+        };
+        let temp = a
+            .rotate_left(5)
+            .wrapping_add(round_fn)
+            .wrapping_add(e)
+            .wrapping_add(constant)
+            .wrapping_add(word);
+        e = d;
+        d = c;
+        c = b.rotate_left(30);
+        b = a;
+        a = temp;
+    }
+
+    state[0] = state[0].wrapping_add(a);
+    state[1] = state[1].wrapping_add(b);
+    state[2] = state[2].wrapping_add(c);
+    state[3] = state[3].wrapping_add(d);
+    state[4] = state[4].wrapping_add(e);
 }
 
 /// Reads a single `T` from a mappable buffer.

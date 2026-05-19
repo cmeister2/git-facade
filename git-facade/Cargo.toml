@@ -13,6 +13,10 @@ exclude = ["renovate.json", ".github/", "node_modules/", "package.json", "packag
 name = "git-facade"
 path = "src/main.rs"
 
+[[bin]]
+name = "gpu-prefix-tester"
+path = "src/bin/gpu-prefix-tester.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
