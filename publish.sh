@@ -35,24 +35,6 @@ crate_version_exists() {
 	curl --silent --show-error --fail "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null 2>&1
 }
 
-wait_for_crate_version() {
-	local crate=$1
-	local version=$2
-	local attempt
-
-	for attempt in $(seq 1 30); do
-		if crate_version_exists "$crate" "$version"; then
-			return 0
-		fi
-
-		echo "waiting for ${crate} ${version} to appear on crates.io (${attempt}/30)"
-		sleep 10
-	done
-
-	echo "timed out waiting for ${crate} ${version} to appear on crates.io" >&2
-	return 1
-}
-
 publish_wgpu_sha1_if_needed() {
 	local version tag
 
@@ -77,7 +59,6 @@ publish_wgpu_sha1_if_needed() {
 
 	echo "publishing ${WGPU_CRATE} ${version} before git-facade"
 	cargo publish -p "$WGPU_CRATE" --allow-dirty
-	wait_for_crate_version "$WGPU_CRATE" "$version"
 	push_tag "$tag"
 }
 
