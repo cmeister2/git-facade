@@ -12,7 +12,7 @@ struct Params {
     salt_base_lo: u32,
     salt_base_hi: u32,
     total_len_bytes: u32,
-    _pad1: u32,
+    dispatch_groups_x: u32,
 }
 
 struct FindResult {
@@ -23,27 +23,36 @@ struct FindResult {
 
 @group(0) @binding(0) var<storage, read> template_data: array<u32>;
 @group(0) @binding(1) var<uniform> params: Params;
+// Auxiliary read-only data. For find_prefix this stores prefix words followed by
+// the five-word SHA1 prefix state; for compute_digest it stores salt pairs
+// followed by the same prefix state.
 @group(0) @binding(2) var<storage, read> aux_data: array<u32>;
 @group(0) @binding(3) var<storage, read_write> result: FindResult;
 @group(0) @binding(4) var<storage, read_write> debug_digests: array<u32>;
 
+// Rotate left, used by SHA1 rounds and message schedule expansion.
 fn rotl(x: u32, n: u32) -> u32 {
     return (x << n) | (x >> (32u - n));
 }
 
+// SHA1 choose function for rounds 0..19.
 fn sha1_f0(b: u32, c: u32, d: u32) -> u32 {
     return (b & c) | ((~b) & d);
 }
 
+// SHA1 parity function for rounds 20..39 and 60..79.
 fn sha1_f1(b: u32, c: u32, d: u32) -> u32 {
     return b ^ c ^ d;
 }
 
+// SHA1 majority function for rounds 40..59.
 fn sha1_f2(b: u32, c: u32, d: u32) -> u32 {
     return (b & c) | (b & d) | (c & d);
 }
 
+// Compress one 512-bit SHA1 message block into the five-word chaining state.
 fn sha1_compress(state: ptr<function, array<u32, 5>>, block: ptr<function, array<u32, 16>>) {
+    // Keep only the rolling 16-word schedule window instead of a private W[80].
     var schedule: array<u32, 16>;
     for (var i = 0u; i < 16u; i++) {
         schedule[i] = (*block)[i];
@@ -102,9 +111,12 @@ fn sha1_compress(state: ptr<function, array<u32, 5>>, block: ptr<function, array
     (*state)[4] += e;
 }
 
+// Return W[round], generating and storing it in the rolling 16-word schedule
+// once the initial message words have been consumed.
 fn schedule_word(schedule: ptr<function, array<u32, 16>>, round: u32) -> u32 {
     let slot = round & 15u;
     if round >= 16u {
+        // `schedule[slot]` still holds W[t-16] at this point.
         (*schedule)[slot] = rotl(
             (*schedule)[(round - 3u) & 15u] ^
             (*schedule)[(round - 8u) & 15u] ^
@@ -116,22 +128,35 @@ fn schedule_word(schedule: ptr<function, array<u32, 16>>, round: u32) -> u32 {
     return (*schedule)[slot];
 }
 
-// Hex lookup table as an array
-const HEX_TABLE: array<u32, 16> = array<u32, 16>(
-    0x30u, 0x31u, 0x32u, 0x33u, 0x34u, 0x35u, 0x36u, 0x37u,
-    0x38u, 0x39u, 0x61u, 0x62u, 0x63u, 0x64u, 0x65u, 0x66u
-);
-
-fn salt_hex_byte(salt_lo: u32, salt_hi: u32, idx: u32) -> u32 {
-    if idx < 8u {
-        let nibble = (salt_hi >> (28u - idx * 4u)) & 0xFu;
-        return HEX_TABLE[nibble];
+// Convert a 4-bit nibble to lowercase ASCII hex.
+fn hex_ascii(nibble: u32) -> u32 {
+    if nibble < 10u {
+        return 0x30u + nibble;
     }
-
-    let nibble = (salt_lo >> (28u - (idx - 8u) * 4u)) & 0xFu;
-    return HEX_TABLE[nibble];
+    return 0x57u + nibble;
 }
 
+// Pack four ASCII hex characters from `value` into one big-endian u32 word.
+fn ascii_hex_word(value: u32, high_shift: u32) -> u32 {
+    // `high_shift` is 28 or 12, selecting either the high or low 16 bits.
+    return (hex_ascii((value >> high_shift) & 0xFu) << 24u) |
+        (hex_ascii((value >> (high_shift - 4u)) & 0xFu) << 16u) |
+        (hex_ascii((value >> (high_shift - 8u)) & 0xFu) << 8u) |
+        hex_ascii((value >> (high_shift - 12u)) & 0xFu);
+}
+
+// Convert the u64 salt split across hi/lo words into four big-endian ASCII
+// hex words: hi high, hi low, lo high, lo low.
+fn salt_ascii_words(salt_lo: u32, salt_hi: u32) -> array<u32, 4> {
+    return array<u32, 4>(
+        ascii_hex_word(salt_hi, 28u),
+        ascii_hex_word(salt_hi, 12u),
+        ascii_hex_word(salt_lo, 28u),
+        ascii_hex_word(salt_lo, 12u)
+    );
+}
+
+// Write one byte into a big-endian u32 block word, preserving neighboring bytes.
 fn write_block_byte(block: ptr<function, array<u32, 16>>, byte_idx: u32, value: u32) {
     let word_idx = byte_idx / 4u;
     let byte_pos = byte_idx % 4u;
@@ -139,15 +164,53 @@ fn write_block_byte(block: ptr<function, array<u32, 16>>, byte_idx: u32, value: 
     (*block)[word_idx] = ((*block)[word_idx] & ~(0xFFu << shift)) | ((value & 0xFFu) << shift);
 }
 
-fn patch_salt_in_block(block: ptr<function, array<u32, 16>>, block_start: u32, salt_lo: u32, salt_hi: u32) {
-    for (var i = 0u; i < 16u; i++) {
-        let salt_pos = params.salt_offset_bytes + i;
-        if salt_pos >= block_start && salt_pos < block_start + 64u {
-            write_block_byte(block, salt_pos - block_start, salt_hex_byte(salt_lo, salt_hi, i));
+// Patch one four-byte ASCII salt word into a local 64-byte SHA1 block.
+fn patch_salt_word_in_block(block: ptr<function, array<u32, 16>>, block_start: u32, word_start: u32, salt_word: u32) {
+    let block_end = block_start + 64u;
+    if word_start >= block_end || word_start + 4u <= block_start {
+        return;
+    }
+
+    if word_start >= block_start && word_start + 4u <= block_end {
+        let local_byte = word_start - block_start;
+        let word_idx = local_byte / 4u;
+        let byte_offset = local_byte % 4u;
+
+        if byte_offset == 0u {
+            // Fast path: salt word is aligned with the destination message word.
+            (*block)[word_idx] = salt_word;
+        } else {
+            // Unaligned path: split the big-endian salt word across two message
+            // words without disturbing the non-salt bytes around it.
+            let first_shift = byte_offset * 8u;
+            let first_mask = 0xFFFFFFFFu >> first_shift;
+            (*block)[word_idx] = ((*block)[word_idx] & ~first_mask) | ((salt_word >> first_shift) & first_mask);
+
+            let second_shift = (4u - byte_offset) * 8u;
+            let second_mask = 0xFFFFFFFFu << second_shift;
+            (*block)[word_idx + 1u] = ((*block)[word_idx + 1u] & ~second_mask) | ((salt_word << second_shift) & second_mask);
+        }
+        return;
+    }
+
+    // Fallback for the rare case where this four-byte salt word crosses a
+    // 64-byte SHA1 block boundary. Only overlapping bytes belong in this block.
+    for (var i = 0u; i < 4u; i++) {
+        let byte_pos = word_start + i;
+        if byte_pos >= block_start && byte_pos < block_end {
+            write_block_byte(block, byte_pos - block_start, (salt_word >> (24u - i * 8u)) & 0xFFu);
         }
     }
 }
 
+// Patch all four packed ASCII salt words that overlap the current block.
+fn patch_salt_in_block(block: ptr<function, array<u32, 16>>, block_start: u32, salt_words: ptr<function, array<u32, 4>>) {
+    for (var i = 0u; i < 4u; i++) {
+        patch_salt_word_in_block(block, block_start, params.salt_offset_bytes + i * 4u, (*salt_words)[i]);
+    }
+}
+
+// Load the precomputed SHA1 chaining state after all full prefix blocks.
 fn load_prefix_state(offset: u32) -> array<u32, 5> {
     return array<u32, 5>(
         aux_data[offset + 0u],
@@ -158,9 +221,12 @@ fn load_prefix_state(offset: u32) -> array<u32, 5> {
     );
 }
 
+// Hash the suffix template with one candidate salt, starting from the CPU-made
+// prefix state and appending standard SHA1 padding for the full original length.
 fn sha1_of_template(salt_lo: u32, salt_hi: u32, prefix_state_offset: u32) -> array<u32, 5> {
     let suffix_bytes = params.template_len_bytes;
     var state = load_prefix_state(prefix_state_offset);
+    var salt_words = salt_ascii_words(salt_lo, salt_hi);
 
     let full_blocks = suffix_bytes / 64u;
     for (var b = 0u; b < full_blocks; b++) {
@@ -169,7 +235,9 @@ fn sha1_of_template(salt_lo: u32, salt_hi: u32, prefix_state_offset: u32) -> arr
         for (var i = 0u; i < 16u; i++) {
             block[i] = template_data[base + i];
         }
-        patch_salt_in_block(&block, b * 64u, salt_lo, salt_hi);
+        // Salt coordinates are suffix-relative, so each block patches only the
+        // salt bytes/words that overlap its [block_start, block_start + 64) span.
+        patch_salt_in_block(&block, b * 64u, &salt_words);
         sha1_compress(&state, &block);
     }
 
@@ -189,14 +257,18 @@ fn sha1_of_template(salt_lo: u32, salt_hi: u32, prefix_state_offset: u32) -> arr
     let leftover_bytes = remaining % 4u;
     if leftover_bytes != 0u {
         var partial = template_data[remaining_words_start + remaining_full_words];
+        // Keep only real suffix bytes in the partial final word; padding is
+        // inserted after salt patching so salt bytes are not overwritten.
         let mask = 0xFFFFFFFFu << ((4u - leftover_bytes) * 8u);
         final_block[remaining_full_words] = partial & mask;
     }
 
-    patch_salt_in_block(&final_block, full_blocks * 64u, salt_lo, salt_hi);
+    patch_salt_in_block(&final_block, full_blocks * 64u, &salt_words);
+    // Append the SHA1 0x80 padding byte at the first byte after the suffix.
     let padding_shift = 24u - leftover_bytes * 8u;
     final_block[remaining_full_words] = final_block[remaining_full_words] | (0x80u << padding_shift);
 
+    // Full original message length, not suffix length, goes in the SHA1 length field.
     let bit_count_low = params.total_len_bytes << 3u;
     let bit_count_high = params.total_len_bytes >> 29u;
 
@@ -218,6 +290,7 @@ fn sha1_of_template(salt_lo: u32, salt_hi: u32, prefix_state_offset: u32) -> arr
     return state;
 }
 
+// Check whether the computed digest state starts with the requested byte prefix.
 fn check_prefix(state: array<u32, 5>) -> bool {
     let prefix_len = params.prefix_len;
     // Compare full u32 words first
@@ -238,30 +311,31 @@ fn check_prefix(state: array<u32, 5>) -> bool {
     return true;
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(64)
+// Search one batch of consecutive salts for the first digest matching aux_data's prefix.
 fn find_prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let idx = gid.x;
+    // The host may dispatch across x and y to stay under per-dimension dispatch
+    // limits. Flatten back to one candidate index here.
+    let idx = gid.x + gid.y * params.dispatch_groups_x * 64u;
     if idx >= params.batch_size {
         return;
     }
 
-    // Check if already found
     if atomicLoad(&result.found) != 0u {
         return;
     }
 
-    // Compute salt = salt_base + idx as u64
+    // Add the flattened candidate index to the u64 salt base.
     let salt_lo = params.salt_base_lo + idx;
     var salt_hi = params.salt_base_hi;
     if salt_lo < params.salt_base_lo {
-        salt_hi += 1u;  // carry
+        salt_hi += 1u;
     }
 
     let prefix_state_offset = (params.prefix_len + 3u) / 4u;
     let state = sha1_of_template(salt_lo, salt_hi, prefix_state_offset);
 
     if check_prefix(state) {
-        // Atomic CAS to claim the result
         let old = atomicCompareExchangeWeak(&result.found, 0u, 1u);
         if old.exchanged {
             result.salt_lo = salt_lo;
@@ -271,6 +345,7 @@ fn find_prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 @compute @workgroup_size(1)
+// Test-only entry point: compute full digests for explicit salt values in aux_data.
 fn compute_digest(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.batch_size {

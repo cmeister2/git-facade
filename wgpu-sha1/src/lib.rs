@@ -12,8 +12,11 @@ use wgpu::util::DeviceExt;
 /// Default number of SHA1 invocations per GPU dispatch.
 pub const DEFAULT_BATCH_SIZE: u32 = 1 << 20;
 
-/// Workgroup size matching the shader's `@workgroup_size(256)`.
-const WORKGROUP_SIZE: u32 = 256;
+/// Workgroup size matching the shader's `@workgroup_size(64)`.
+const WORKGROUP_SIZE: u32 = 64;
+
+/// Conservative per-dimension dispatch limit exposed by WebGPU adapters.
+const MAX_DISPATCH_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
 
 /// Errors from GPU operations.
 #[derive(Debug)]
@@ -56,8 +59,8 @@ struct Params {
     salt_base_hi: u32,
     /// Total byte length of the original message before suffix extraction.
     total_len_bytes: u32,
-    /// Padding for 16-byte alignment.
-    _pad1: u32,
+    /// Number of workgroups dispatched in the x dimension.
+    dispatch_groups_x: u32,
 }
 
 /// Result struct read back from the GPU.
@@ -275,7 +278,7 @@ impl GpuSha1 {
             salt_base_lo: salt_base as u32,
             salt_base_hi: (salt_base >> 32) as u32,
             total_len_bytes: template.total_bytes,
-            _pad1: 0,
+            dispatch_groups_x: dispatch_groups_x(batch_size),
         };
 
         let template_buf = self
@@ -356,7 +359,9 @@ impl GpuSha1 {
             ],
         });
 
-        let num_workgroups = batch_size.div_ceil(WORKGROUP_SIZE);
+        let total_workgroups = batch_size.div_ceil(WORKGROUP_SIZE);
+        let dispatch_groups_x = total_workgroups.min(MAX_DISPATCH_WORKGROUPS_PER_DIMENSION);
+        let dispatch_groups_y = total_workgroups.div_ceil(dispatch_groups_x);
 
         let mut encoder = self
             .device
@@ -371,7 +376,7 @@ impl GpuSha1 {
             });
             pass.set_pipeline(&self.find_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(num_workgroups, 1, 1);
+            pass.dispatch_workgroups(dispatch_groups_x, dispatch_groups_y, 1);
         }
 
         encoder.copy_buffer_to_buffer(
@@ -426,7 +431,7 @@ impl GpuSha1 {
             salt_base_lo: 0,
             salt_base_hi: 0,
             total_len_bytes: template.total_bytes,
-            _pad1: 0,
+            dispatch_groups_x: num_salts as u32,
         };
 
         let template_buf = self
@@ -554,6 +559,12 @@ fn bytes_to_be_words(data: &[u8]) -> Vec<u32> {
         .chunks(4)
         .map(|chunk| u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect()
+}
+
+/// Returns the x-dimension workgroup count used to flatten shader invocation ids.
+fn dispatch_groups_x(batch_size: u32) -> u32 {
+    let total_workgroups = batch_size.div_ceil(WORKGROUP_SIZE);
+    total_workgroups.min(MAX_DISPATCH_WORKGROUPS_PER_DIMENSION)
 }
 
 /// Returns the initial SHA1 state words.
