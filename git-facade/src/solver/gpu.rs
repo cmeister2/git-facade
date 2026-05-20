@@ -51,6 +51,7 @@ impl DigestPrefixSolver for GpuSolver {
                 if digest[..prefix.len()] == *prefix {
                     let hex_digest = hex_encode_digest(&obj_digest);
                     return Ok(CommitObject {
+                        salt: found.salt,
                         raw: tpl.bytes.clone(),
                         payload: tpl.payload().to_vec(),
                         hash: hex_digest,

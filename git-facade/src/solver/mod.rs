@@ -10,6 +10,8 @@ use crate::digest::ObjectDigest;
 
 /// A solved commit object with its raw bytes, payload, and hex-encoded hash.
 pub struct CommitObject {
+    /// The 64-bit salt encoded into the commit template.
+    pub salt: u64,
     /// The full git object bytes (including `commit <len>\0` prefix).
     pub raw: Vec<u8>,
     /// The payload portion (without the prefix).

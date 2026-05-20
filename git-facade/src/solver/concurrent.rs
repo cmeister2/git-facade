@@ -56,6 +56,7 @@ impl DigestPrefixSolver for ConcurrentSolver {
                     found.store(true, Ordering::Relaxed);
                     let hex_digest = hex_encode_digest(&digest);
                     return Some(CommitObject {
+                        salt,
                         raw: tpl.bytes.clone(),
                         payload: tpl.payload().to_vec(),
                         hash: hex_digest,

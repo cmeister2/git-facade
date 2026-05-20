@@ -50,6 +50,7 @@ impl DigestPrefixSolver for SingleThreadedSolver {
             if has_prefix(&digest, prefix) {
                 let hex_digest = hex_encode_digest(&digest);
                 return Ok(CommitObject {
+                    salt,
                     raw: tpl.bytes.clone(),
                     payload: tpl.payload().to_vec(),
                     hash: hex_digest,

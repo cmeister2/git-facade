@@ -107,9 +107,9 @@ fn hex_encode_uint64(dst: &mut [u8], src: u64) {
 
 /// Builds an [`ObjectTemplate`] from a parsed commit, ready for brute-forcing.
 ///
-/// If the commit has a `gpgsig` header, re-signs it and places the brute-force
-/// salt inside the PGP armor `Comment:` field. Otherwise uses the unsigned
-/// `facadesalt` header approach.
+/// If the commit has a `gpgsig` header, reuses that signature block and places
+/// the brute-force salt inside the PGP armor `Comment:` field. Otherwise uses
+/// the unsigned `facadesalt` header approach.
 ///
 /// # Errors
 ///
@@ -157,12 +157,15 @@ fn prepare_unsigned_template(commit_object: &Object) -> Result<ObjectTemplate, S
     })
 }
 
-/// Signed path: re-signs the commit and places the salt in the PGP armor
+/// Signed path: reuses the existing signature block and places the salt in the PGP armor
 /// `Comment:` field inside the `gpgsig` header.
 fn prepare_signed_template(commit_object: &Object) -> Result<ObjectTemplate, String> {
-    let content = signing::signable_content(commit_object);
-    let signature = signing::gpg_sign(&content)?;
-    let gpgsig_header = signing::build_gpgsig_with_salt(&signature)?;
+    let existing_gpgsig = commit_object
+        .headers
+        .iter()
+        .find(|header| header.value.starts_with("gpgsig "))
+        .ok_or_else(|| "signed commit missing gpgsig header".to_string())?;
+    let gpgsig_header = signing::reuse_gpgsig_with_salt(&existing_gpgsig.value)?;
 
     let gpgsig_salt_offset = signing::salt_offset_in_gpgsig(&gpgsig_header)
         .ok_or_else(|| "failed to locate salt in gpgsig header".to_string())?;
@@ -231,6 +234,28 @@ mod tests {
 
         let payload = std::str::from_utf8(tpl.payload()).unwrap();
         assert!(payload.contains("facadesalt 0000000000000000"));
+    }
+
+    #[test]
+    fn test_prepare_signed_template_reuses_existing_gpgsig() {
+        let raw = "tree e57181f20b062532907436169bb5823b6af2f099\n\
+            author Thomas Richner <thomas.richner@oviva.com> 1653693519 +0200\n\
+            committer Thomas Richner <thomas.richner@oviva.com> 1653693519 +0200\n\
+            gpgsig -----BEGIN PGP SIGNATURE-----\n\
+             \n\
+             iQIzBAAB\n\
+             =XXXX\n\
+             -----END PGP SIGNATURE-----\n\
+            \n\
+            Initial commit\n";
+
+        let obj = parse_git_commit_object(raw.as_bytes()).unwrap();
+        let tpl = prepare_template(&obj).unwrap();
+        let payload = std::str::from_utf8(tpl.payload()).unwrap();
+
+        assert!(payload.contains("gpgsig -----BEGIN PGP SIGNATURE-----"));
+        assert!(payload.contains(" Comment: 0000000000000000"));
+        assert!(!payload.contains("facadesalt 0000000000000000"));
     }
 
     #[test]

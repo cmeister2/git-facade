@@ -114,6 +114,46 @@ pub fn build_gpgsig_with_salt(signature: &str) -> Result<String, String> {
     Ok(result)
 }
 
+/// Reuses an existing `gpgsig` header value and inserts or replaces a
+/// `Comment:` salt line inside the ASCII armor block.
+///
+/// # Errors
+///
+/// Returns an error if the header does not contain a PGP armor begin line.
+pub fn reuse_gpgsig_with_salt(gpgsig_header: &str) -> Result<String, String> {
+    let mut lines: Vec<String> = gpgsig_header.lines().map(|line| line.to_string()).collect();
+    let mut begin_index = None;
+    let mut comment_index = None;
+
+    for (index, line) in lines.iter().enumerate() {
+        let logical = if index == 0 {
+            line.strip_prefix(GPGSIG_HEADER_PREFIX)
+                .unwrap_or(line.as_str())
+        } else {
+            line.strip_prefix(' ').unwrap_or(line.as_str())
+        };
+
+        if logical == PGP_ARMOR_BEGIN {
+            begin_index = Some(index);
+        }
+        if logical.starts_with(COMMENT_PREFIX) {
+            comment_index = Some(index);
+        }
+    }
+
+    let begin_index =
+        begin_index.ok_or_else(|| "PGP signature missing BEGIN armor line".to_string())?;
+    let replacement = format!(" {}{}", COMMENT_PREFIX, SALT_PLACEHOLDER);
+
+    if let Some(comment_index) = comment_index {
+        lines[comment_index] = replacement;
+    } else {
+        lines.insert(begin_index + 1, replacement);
+    }
+
+    Ok(lines.join("\n"))
+}
+
 /// Returns the byte offset of the salt placeholder within the gpgsig header
 /// string produced by [`build_gpgsig_with_salt`].
 pub fn salt_offset_in_gpgsig(gpgsig_header: &str) -> Option<usize> {
@@ -194,6 +234,36 @@ mod tests {
     fn test_build_gpgsig_missing_armor() {
         let sig = "not a PGP signature";
         assert!(build_gpgsig_with_salt(sig).is_err());
+    }
+
+    #[test]
+    fn test_reuse_gpgsig_with_salt_inserts_comment() {
+        let original = "gpgsig -----BEGIN PGP SIGNATURE-----\n \
+\n \
+ iQIzBAAB\n \
+ =XXXX\n \
+ -----END PGP SIGNATURE-----";
+
+        let updated = reuse_gpgsig_with_salt(original).unwrap();
+        assert!(updated.contains(&format!(" {}{}", COMMENT_PREFIX, SALT_PLACEHOLDER)));
+
+        let begin_pos = updated.find(PGP_ARMOR_BEGIN).unwrap();
+        let comment_pos = updated
+            .find(&format!(" {}{}", COMMENT_PREFIX, SALT_PLACEHOLDER))
+            .unwrap();
+        assert!(comment_pos > begin_pos);
+    }
+
+    #[test]
+    fn test_reuse_gpgsig_with_salt_replaces_existing_comment() {
+        let original = format!(
+            "gpgsig -----BEGIN PGP SIGNATURE-----\n {}old-comment\n iQIzBAAB\n =XXXX\n -----END PGP SIGNATURE-----",
+            COMMENT_PREFIX
+        );
+
+        let updated = reuse_gpgsig_with_salt(&original).unwrap();
+        assert!(updated.contains(&format!(" {}{}", COMMENT_PREFIX, SALT_PLACEHOLDER)));
+        assert!(!updated.contains("old-comment"));
     }
 
     #[test]

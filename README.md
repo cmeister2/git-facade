@@ -14,6 +14,12 @@ cargo install --path .
 # do a normal git commit
 git commit -am '...'
 
+# find a matching salt without writing or updating anything
+git-facade --solver gpu --prefix facade --salt-only
+
+# later, reuse that salt value to materialize the same vanity commit
+git-facade --prefix facade --salt 0123456789abcdef --update-ref
+
 # update the last commit with a vanity hash
 git-facade --update-ref --prefix c0ffee
 ```
@@ -22,8 +28,10 @@ git-facade --update-ref --prefix c0ffee
 
 | Flag           | Default      | Description                                                              |
 |----------------|--------------|--------------------------------------------------------------------------|
-| `--prefix`     | `c0ffee`     | Hex prefix to brute-force (even-length, lowercase `[0-9a-f]`)            |
-| `--solver`     | `concurrent` | Solver to use: `concurrent`, `singlethreaded`, or `gpu`                  |
+| `--prefix`     | `c0ffee`     | Hex prefix to brute-force or verify (even-length, lowercase `[0-9a-f]`) |
+| `--solver`     | `concurrent` | Solver to use when brute-forcing: `concurrent`, `singlethreaded`, or `gpu` |
+| `--salt`       | unset        | Apply an explicit salt value (1-16 hex digits) instead of brute-forcing  |
+| `--salt-only`  | `false`      | Brute-force a matching salt and print only the salt                      |
 | `--update-ref` | `false`      | Update HEAD to point to the new commit object                            |
 
 ## How it works
@@ -35,6 +43,11 @@ This is a faithful port of the [Go implementation](https://github.com/trichner/g
 3. Add a `facadesalt` header (or a `Comment:` field in the GPG signature for signed commits) to the commit object and brute-force the salt value until the SHA1 hash starts with the desired prefix.
 4. Write the new commit object to the git store (`git hash-object -w -t commit --stdin`).
 5. Optionally update the current branch to the new commit (`git update-ref HEAD <new digest>`).
+
+You can also split that into two steps:
+
+1. Run `git-facade --prefix ... --salt-only` to brute-force and print a reusable salt.
+2. Run `git-facade --prefix ... --salt <value> --update-ref` later to recreate and apply the same vanity commit without brute-forcing again.
 
 ## Performance
 
