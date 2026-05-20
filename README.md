@@ -20,11 +20,11 @@ git-facade --update-ref --prefix c0ffee
 
 ## Options
 
-| Flag           | Default      | Description                                                   |
-|----------------|--------------|---------------------------------------------------------------|
-| `--prefix`     | `c0ffee`     | Hex prefix to brute-force (even-length, lowercase `[0-9a-f]`) |
-| `--solver`     | `concurrent` | Solver to use: `concurrent` or `singlethreaded`               |
-| `--update-ref` | `false`      | Update HEAD to point to the new commit object                 |
+| Flag           | Default      | Description                                                              |
+|----------------|--------------|--------------------------------------------------------------------------|
+| `--prefix`     | `c0ffee`     | Hex prefix to brute-force (even-length, lowercase `[0-9a-f]`)            |
+| `--solver`     | `concurrent` | Solver to use: `concurrent`, `singlethreaded`, or `gpu`                  |
+| `--update-ref` | `false`      | Update HEAD to point to the new commit object                            |
 
 ## How it works
 
@@ -40,10 +40,12 @@ This is a faithful port of the [Go implementation](https://github.com/trichner/g
 
 The concurrent solver uses [rayon](https://github.com/rayon-rs/rayon) to parallelise across all available CPU cores.
 
-- 6-character prefix: under a second
-- 8-character prefix: minutes
+The `gpu` solver uses [wgpu](https://github.com/gfx-rs/wgpu) compute shaders to offload SHA1 brute-forcing to the GPU. On supported hardware this is significantly faster than CPU solvers for longer prefixes.
 
-Prefixes beyond 8 characters may not finish in useful time.
+- 6-character prefix: under a second
+- 8-character prefix: minutes (CPU), seconds (GPU)
+
+Prefixes beyond 8 characters may not finish in useful time on CPU.
 
 ## Prefix ideas
 
