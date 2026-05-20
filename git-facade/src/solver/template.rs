@@ -238,24 +238,30 @@ mod tests {
 
     #[test]
     fn test_prepare_signed_template_reuses_existing_gpgsig() {
-        let raw = "tree e57181f20b062532907436169bb5823b6af2f099\n\
-            author Thomas Richner <thomas.richner@oviva.com> 1653693519 +0200\n\
-            committer Thomas Richner <thomas.richner@oviva.com> 1653693519 +0200\n\
-            gpgsig -----BEGIN PGP SIGNATURE-----\n\
-             \n\
-             iQIzBAAB\n\
-             =XXXX\n\
-             -----END PGP SIGNATURE-----\n\
-            \n\
-            Initial commit\n";
+        let raw = concat!(
+            "tree e57181f20b062532907436169bb5823b6af2f099\n",
+            "author Thomas Richner <thomas.richner@oviva.com> 1653693519 +0200\n",
+            "committer Thomas Richner <thomas.richner@oviva.com> 1653693519 +0200\n",
+            "gpgsig -----BEGIN PGP SIGNATURE-----\n",
+            " \n",
+            " iQIzBAAB\n",
+            " =XXXX\n",
+            " -----END PGP SIGNATURE-----\n",
+            "\n",
+            "Initial commit\n",
+        );
 
         let obj = parse_git_commit_object(raw.as_bytes()).unwrap();
         let tpl = prepare_template(&obj).unwrap();
         let payload = std::str::from_utf8(tpl.payload()).unwrap();
 
         assert!(payload.contains("gpgsig -----BEGIN PGP SIGNATURE-----"));
-        assert!(payload.contains(" Comment: 0000000000000000"));
+        assert!(payload.contains(" facade:0000000000000000"));
         assert!(!payload.contains("facadesalt 0000000000000000"));
+        // Salt line should be the last line of the gpgsig header (after END marker)
+        let end_marker_pos = payload.find("-----END PGP SIGNATURE-----").unwrap();
+        let salt_pos = payload.find(" facade:0000000000000000").unwrap();
+        assert!(salt_pos > end_marker_pos);
     }
 
     #[test]

@@ -9,10 +9,10 @@ use crate::commit::Object;
 const SALT_HEADER_NAME: &str = "facadesalt";
 /// Git header prefix for GPG signatures.
 const GPGSIG_HEADER_PREFIX: &str = "gpgsig ";
-/// PGP ASCII armor begin marker.
-const PGP_ARMOR_BEGIN: &str = "-----BEGIN PGP SIGNATURE-----";
-/// PGP armor Comment header prefix.
+/// PGP armor Comment header prefix (for stripping legacy salt placement).
 const COMMENT_PREFIX: &str = "Comment: ";
+/// Prefix for the trailing salt continuation line inside the gpgsig header.
+const FACADE_SALT_PREFIX: &str = "facade:";
 /// Zeroed 16-char hex salt placeholder.
 const SALT_PLACEHOLDER: &str = "0000000000000000";
 
@@ -79,17 +79,16 @@ pub fn gpg_sign(content: &[u8]) -> Result<String, String> {
     String::from_utf8(output.stdout).map_err(|e| format!("gpg produced invalid UTF-8: {}", e))
 }
 
-/// Builds a `gpgsig` header value with a `Comment:` salt line inserted into
-/// the PGP armor block. Returns the full multi-line header string including
-/// the `gpgsig ` prefix, with continuation lines prefixed by a space.
+/// Builds a `gpgsig` header value with a trailing salt continuation line
+/// appended after the signature. Returns the full multi-line header string
+/// including the `gpgsig ` prefix, with continuation lines prefixed by a space.
 ///
 /// # Errors
 ///
-/// Returns an error if the signature does not contain a PGP armor begin line.
+/// Returns an error if the signature is empty.
 pub fn build_gpgsig_with_salt(signature: &str) -> Result<String, String> {
     let mut result = String::new();
     let mut first = true;
-    let mut inserted_comment = false;
 
     for line in signature.lines() {
         if first {
@@ -99,68 +98,59 @@ pub fn build_gpgsig_with_salt(signature: &str) -> Result<String, String> {
             result.push('\n');
             result.push_str(&format!(" {}", line));
         }
-
-        if !inserted_comment && line == PGP_ARMOR_BEGIN {
-            result.push('\n');
-            result.push_str(&format!(" {}{}", COMMENT_PREFIX, SALT_PLACEHOLDER));
-            inserted_comment = true;
-        }
     }
 
-    if !inserted_comment {
-        return Err("PGP signature missing BEGIN armor line".to_string());
+    if first {
+        return Err("empty PGP signature".to_string());
     }
+
+    result.push('\n');
+    result.push_str(&format!(" {}{}", FACADE_SALT_PREFIX, SALT_PLACEHOLDER));
 
     Ok(result)
 }
 
-/// Reuses an existing `gpgsig` header value and inserts or replaces a
-/// `Comment:` salt line inside the ASCII armor block.
+/// Reuses an existing `gpgsig` header value, stripping any previous salt
+/// placement (legacy `Comment:` or trailing `facade:` line) and appending
+/// a fresh trailing salt continuation line at the end.
 ///
 /// # Errors
 ///
-/// Returns an error if the header does not contain a PGP armor begin line.
+/// Returns an error if the header is empty.
 pub fn reuse_gpgsig_with_salt(gpgsig_header: &str) -> Result<String, String> {
-    let mut lines: Vec<String> = gpgsig_header.lines().map(|line| line.to_string()).collect();
-    let mut begin_index = None;
-    let mut comment_index = None;
+    let lines: Vec<&str> = gpgsig_header.lines().collect();
+    if lines.is_empty() {
+        return Err("empty gpgsig header".to_string());
+    }
 
-    for (index, line) in lines.iter().enumerate() {
-        let logical = if index == 0 {
-            line.strip_prefix(GPGSIG_HEADER_PREFIX)
-                .unwrap_or(line.as_str())
+    let mut filtered: Vec<&str> = Vec::with_capacity(lines.len());
+    for line in &lines {
+        let logical = if filtered.is_empty() {
+            line.strip_prefix(GPGSIG_HEADER_PREFIX).unwrap_or(line)
         } else {
-            line.strip_prefix(' ').unwrap_or(line.as_str())
+            line.strip_prefix(' ').unwrap_or(line)
         };
 
-        if logical == PGP_ARMOR_BEGIN {
-            begin_index = Some(index);
+        if logical.starts_with(COMMENT_PREFIX) || logical.starts_with(FACADE_SALT_PREFIX) {
+            continue;
         }
-        if logical.starts_with(COMMENT_PREFIX) {
-            comment_index = Some(index);
-        }
+        filtered.push(line);
     }
 
-    let begin_index =
-        begin_index.ok_or_else(|| "PGP signature missing BEGIN armor line".to_string())?;
-    let replacement = format!(" {}{}", COMMENT_PREFIX, SALT_PLACEHOLDER);
+    let mut result = filtered.join("\n");
+    result.push('\n');
+    result.push_str(&format!(" {}{}", FACADE_SALT_PREFIX, SALT_PLACEHOLDER));
 
-    if let Some(comment_index) = comment_index {
-        lines[comment_index] = replacement;
-    } else {
-        lines.insert(begin_index + 1, replacement);
-    }
-
-    Ok(lines.join("\n"))
+    Ok(result)
 }
 
 /// Returns the byte offset of the salt placeholder within the gpgsig header
 /// string produced by [`build_gpgsig_with_salt`].
 pub fn salt_offset_in_gpgsig(gpgsig_header: &str) -> Option<usize> {
-    let comment_tag = format!(" {}{}", COMMENT_PREFIX, SALT_PLACEHOLDER);
+    let salt_tag = format!(" {}{}", FACADE_SALT_PREFIX, SALT_PLACEHOLDER);
     gpgsig_header
-        .find(&comment_tag)
-        .map(|pos| pos + 1 + COMMENT_PREFIX.len()) // skip the leading space and "Comment: "
+        .find(&salt_tag)
+        .map(|pos| pos + 1 + FACADE_SALT_PREFIX.len())
 }
 
 /// Reads the GPG signing key from `git config user.signingkey`.
@@ -204,7 +194,7 @@ mod tests {
                     -----END PGP SIGNATURE-----";
         let result = build_gpgsig_with_salt(sig).unwrap();
         assert!(result.starts_with("gpgsig -----BEGIN PGP SIGNATURE-----\n"));
-        assert!(result.contains(&format!(" Comment: {}", SALT_PLACEHOLDER)));
+        assert!(result.ends_with(&format!(" {}{}", FACADE_SALT_PREFIX, SALT_PLACEHOLDER)));
         // Every line after the first should start with a space
         for (i, line) in result.lines().enumerate() {
             if i > 0 {
@@ -231,13 +221,12 @@ mod tests {
     }
 
     #[test]
-    fn test_build_gpgsig_missing_armor() {
-        let sig = "not a PGP signature";
-        assert!(build_gpgsig_with_salt(sig).is_err());
+    fn test_build_gpgsig_empty_signature() {
+        assert!(build_gpgsig_with_salt("").is_err());
     }
 
     #[test]
-    fn test_reuse_gpgsig_with_salt_inserts_comment() {
+    fn test_reuse_gpgsig_with_salt_appends_trailing_salt() {
         let original = "gpgsig -----BEGIN PGP SIGNATURE-----\n \
 \n \
  iQIzBAAB\n \
@@ -245,25 +234,33 @@ mod tests {
  -----END PGP SIGNATURE-----";
 
         let updated = reuse_gpgsig_with_salt(original).unwrap();
-        assert!(updated.contains(&format!(" {}{}", COMMENT_PREFIX, SALT_PLACEHOLDER)));
-
-        let begin_pos = updated.find(PGP_ARMOR_BEGIN).unwrap();
-        let comment_pos = updated
-            .find(&format!(" {}{}", COMMENT_PREFIX, SALT_PLACEHOLDER))
-            .unwrap();
-        assert!(comment_pos > begin_pos);
+        assert!(updated.ends_with(&format!(" {}{}", FACADE_SALT_PREFIX, SALT_PLACEHOLDER)));
+        assert!(!updated.contains(COMMENT_PREFIX));
     }
 
     #[test]
-    fn test_reuse_gpgsig_with_salt_replaces_existing_comment() {
+    fn test_reuse_gpgsig_with_salt_strips_legacy_comment() {
         let original = format!(
             "gpgsig -----BEGIN PGP SIGNATURE-----\n {}old-comment\n iQIzBAAB\n =XXXX\n -----END PGP SIGNATURE-----",
             COMMENT_PREFIX
         );
 
         let updated = reuse_gpgsig_with_salt(&original).unwrap();
-        assert!(updated.contains(&format!(" {}{}", COMMENT_PREFIX, SALT_PLACEHOLDER)));
+        assert!(updated.ends_with(&format!(" {}{}", FACADE_SALT_PREFIX, SALT_PLACEHOLDER)));
         assert!(!updated.contains("old-comment"));
+        assert!(!updated.contains(COMMENT_PREFIX));
+    }
+
+    #[test]
+    fn test_reuse_gpgsig_with_salt_replaces_existing_trailing_salt() {
+        let original = format!(
+            "gpgsig -----BEGIN PGP SIGNATURE-----\n iQIzBAAB\n =XXXX\n -----END PGP SIGNATURE-----\n {}deadbeefcafebabe",
+            FACADE_SALT_PREFIX
+        );
+
+        let updated = reuse_gpgsig_with_salt(&original).unwrap();
+        assert!(updated.ends_with(&format!(" {}{}", FACADE_SALT_PREFIX, SALT_PLACEHOLDER)));
+        assert!(!updated.contains("deadbeefcafebabe"));
     }
 
     #[test]

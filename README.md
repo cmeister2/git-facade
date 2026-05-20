@@ -40,7 +40,7 @@ This is a faithful port of the [Go implementation](https://github.com/trichner/g
 
 1. Read the latest commit digest (`git rev-parse HEAD`).
 2. Parse the raw commit object (`git cat-file -p <digest>`).
-3. Add a `facadesalt` header (or a `Comment:` field in the GPG signature for signed commits) to the commit object and brute-force the salt value until the SHA1 hash starts with the desired prefix.
+3. Add a `facadesalt` header (or a trailing `facade:` continuation line after the GPG signature for signed commits) to the commit object and brute-force the salt value until the SHA1 hash starts with the desired prefix.
 4. Write the new commit object to the git store (`git hash-object -w -t commit --stdin`).
 5. Optionally update the current branch to the new commit (`git update-ref HEAD <new digest>`).
 

@@ -151,6 +151,7 @@ fn main() {
     }
 }
 
+/// Applies a user-provided salt and verifies it matches the requested prefix.
 fn apply_explicit_salt(
     template: &git_facade::solver::template::ObjectTemplate,
     salt: u64,
@@ -222,6 +223,7 @@ fn hex_string_to_bytes(s: &str) -> Result<Vec<u8>, String> {
     Ok(result)
 }
 
+/// Parses a 1-16 digit hexadecimal salt value.
 fn parse_salt_value(s: &str) -> Result<u64, String> {
     if s.is_empty() {
         return Err("salt must not be empty".to_string());

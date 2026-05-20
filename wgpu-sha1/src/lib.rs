@@ -114,6 +114,32 @@ pub struct FindResult {
     pub salt: u64,
 }
 
+/// Reusable GPU resources for repeated searches over one template/prefix/batch shape.
+pub struct GpuPrefixSearch<'a> {
+    /// Parent GPU engine that owns the device, queue, and pipeline.
+    gpu: &'a GpuSha1,
+    /// Stable params fields that are rewritten with a new salt base each dispatch.
+    params: Params,
+    /// Number of workgroups dispatched in x.
+    dispatch_groups_x: u32,
+    /// Number of workgroups dispatched in y.
+    dispatch_groups_y: u32,
+    /// Uniform params buffer, updated before each dispatch.
+    params_buf: wgpu::Buffer,
+    /// Stable template storage buffer.
+    _template_buf: wgpu::Buffer,
+    /// Stable prefix/state storage buffer.
+    _prefix_buf: wgpu::Buffer,
+    /// Result storage buffer, reset before each dispatch.
+    result_buf: wgpu::Buffer,
+    /// Dummy debug digest buffer required by the shared shader bind layout.
+    _debug_buf: wgpu::Buffer,
+    /// CPU-readable staging buffer for the search result.
+    staging_buf: wgpu::Buffer,
+    /// Bind group referencing all stable per-search resources.
+    bind_group: wgpu::BindGroup,
+}
+
 /// GPU-accelerated SHA1 engine.
 pub struct GpuSha1 {
     /// The wgpu device.
@@ -249,6 +275,131 @@ impl GpuSha1 {
             digest_pipeline,
             bind_group_layout,
         })
+    }
+
+    /// Creates reusable search resources for one template, prefix, and batch size.
+    ///
+    /// Use this when submitting many consecutive batches with the same template and
+    /// prefix. Only the salt base and small params/result buffers are updated per
+    /// dispatch.
+    pub fn create_prefix_search<'a>(
+        &'a self,
+        template: &GpuTemplate,
+        prefix: &[u8],
+        batch_size: u32,
+    ) -> GpuPrefixSearch<'a> {
+        let prefix_words = bytes_to_be_words(prefix);
+        let mut prefix_and_state = prefix_words;
+        prefix_and_state.extend_from_slice(&template.prefix_state);
+
+        let dispatch_groups_x = dispatch_groups_x(batch_size);
+        let total_workgroups = batch_size.div_ceil(WORKGROUP_SIZE);
+        let dispatch_groups_y = total_workgroups.div_ceil(dispatch_groups_x);
+
+        let params = Params {
+            salt_offset_bytes: template.salt_offset_bytes,
+            template_len_bytes: template.suffix_bytes,
+            prefix_len: prefix.len() as u32,
+            batch_size,
+            salt_base_lo: 0,
+            salt_base_hi: 0,
+            total_len_bytes: template.total_bytes,
+            dispatch_groups_x,
+        };
+
+        let template_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("template"),
+                contents: bytemuck::cast_slice(&template.words),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+
+        let params_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("params"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
+        let prefix_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("prefix_and_state"),
+                contents: bytemuck::cast_slice(&prefix_and_state),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+
+        let result_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("result"),
+                contents: bytemuck::bytes_of(&FindResultData {
+                    found: 0,
+                    salt_lo: 0,
+                    salt_hi: 0,
+                }),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+            });
+
+        let debug_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("debug_digests"),
+                contents: &[0u8; 4],
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+
+        let staging_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging"),
+            size: std::mem::size_of::<FindResultData>() as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sha1_bind_group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: template_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: prefix_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: result_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: debug_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        GpuPrefixSearch {
+            gpu: self,
+            params,
+            dispatch_groups_x,
+            dispatch_groups_y,
+            params_buf,
+            _template_buf: template_buf,
+            _prefix_buf: prefix_buf,
+            result_buf,
+            _debug_buf: debug_buf,
+            staging_buf,
+            bind_group,
+        }
     }
 
     /// Dispatches one batch of salt candidates and checks for a prefix match.
@@ -546,6 +697,69 @@ impl GpuSha1 {
             .collect();
 
         Ok(digests)
+    }
+}
+
+impl GpuPrefixSearch<'_> {
+    /// Dispatches one batch with this reusable search session.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`GpuError`] if the GPU dispatch or readback fails.
+    pub fn find_prefix(&self, salt_base: u64) -> Result<Option<FindResult>, GpuError> {
+        let params = Params {
+            salt_base_lo: salt_base as u32,
+            salt_base_hi: (salt_base >> 32) as u32,
+            ..self.params
+        };
+        self.gpu
+            .queue
+            .write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
+        self.gpu.queue.write_buffer(
+            &self.result_buf,
+            0,
+            bytemuck::bytes_of(&FindResultData {
+                found: 0,
+                salt_lo: 0,
+                salt_hi: 0,
+            }),
+        );
+
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("find_prefix_reused"),
+            });
+
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("find_prefix_reused"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.gpu.find_pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.dispatch_workgroups(self.dispatch_groups_x, self.dispatch_groups_y, 1);
+        }
+
+        encoder.copy_buffer_to_buffer(
+            &self.result_buf,
+            0,
+            &self.staging_buf,
+            0,
+            std::mem::size_of::<FindResultData>() as u64,
+        );
+
+        self.gpu.queue.submit(Some(encoder.finish()));
+
+        let result_data = read_buffer::<FindResultData>(&self.gpu.device, &self.staging_buf)?;
+
+        if result_data.found != 0 {
+            let salt = (result_data.salt_hi as u64) << 32 | result_data.salt_lo as u64;
+            Ok(Some(FindResult { salt }))
+        } else {
+            Ok(None)
+        }
     }
 }
 

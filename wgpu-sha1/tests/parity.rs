@@ -178,3 +178,37 @@ fn test_find_prefix_matches_cpu() {
         cpu_digest[1]
     );
 }
+
+#[test]
+fn test_find_prefix_across_u32_salt_boundary() {
+    let gpu = match GpuSha1::new() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("skipping GPU test (no adapter): {}", e);
+            return;
+        }
+    };
+
+    let (template_bytes, salt_offset) = make_test_template();
+    let gpu_template = GpuTemplate::from_bytes(&template_bytes, salt_offset);
+    let salt_base = u64::from(u32::MAX) - 1024;
+    let batch_size = 4096;
+    let target_bytes = make_template_with_salt(&template_bytes, salt_offset, salt_base);
+    let target_digest = cpu_sha1(&target_bytes);
+    let prefix = [target_digest[0]];
+
+    let result = gpu
+        .find_prefix(&gpu_template, &prefix, salt_base, batch_size)
+        .expect("GPU find_prefix failed")
+        .expect("GPU should find a one-byte prefix match near u32 boundary");
+
+    assert!(
+        result.salt >= salt_base && result.salt < salt_base + u64::from(batch_size),
+        "salt {:#x} should be within dispatched boundary-crossing batch",
+        result.salt
+    );
+
+    let full_bytes = make_template_with_salt(&template_bytes, salt_offset, result.salt);
+    let cpu_digest = cpu_sha1(&full_bytes);
+    assert_eq!(cpu_digest[0], prefix[0]);
+}

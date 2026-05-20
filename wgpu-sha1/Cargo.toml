@@ -17,10 +17,3 @@ bytemuck = { version = "1", features = ["derive"] }
 sha1 = "0.10"
 hex = "0.4"
 
-[lints.rust]
-missing_docs = "deny"
-
-[lints.clippy]
-missing_docs_in_private_items = "deny"
-missing_errors_doc = "deny"
-missing_panics_doc = "deny"

@@ -31,12 +31,14 @@ impl DigestPrefixSolver for GpuSolver {
         let gpu_template = GpuTemplate::from_bytes(&template.bytes, template.salt_offset);
 
         let batch_size = DEFAULT_BATCH_SIZE;
+        let search = self
+            .gpu
+            .create_prefix_search(&gpu_template, prefix, batch_size);
         let mut salt_base: u64 = 0;
 
         loop {
-            let result = self
-                .gpu
-                .find_prefix(&gpu_template, prefix, salt_base, batch_size)
+            let result = search
+                .find_prefix(salt_base)
                 .map_err(|e| SolverError::Other(e.to_string()))?;
 
             if let Some(found) = result {
