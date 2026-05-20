@@ -6,4 +6,5 @@
 pub mod commit;
 pub mod digest;
 pub mod git;
+pub mod signing;
 pub mod solver;

@@ -32,7 +32,7 @@ fn make_test_template() -> (Vec<u8>, usize) {
     let payload = b"tree e57181f20b062532907436169bb5823b6af2f099\n\
         author Thomas Richner <thomas.richner@oviva.com> 1653693519 +0200\n\
         committer Thomas Richner <thomas.richner@oviva.com> 1653693519 +0200\n\
-        coffeesalt 0000000000000000\n\
+        facadesalt 0000000000000000\n\
         \n\
         Initial commit\n\
         36abde0100000000";

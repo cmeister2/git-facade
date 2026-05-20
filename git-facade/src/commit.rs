@@ -39,6 +39,9 @@ pub fn parse_git_commit_object(object_payload: &[u8]) -> Result<Object, String> 
 }
 
 /// Parses all headers from the data starting at `pos`.
+///
+/// Handles multi-line headers (continuation lines starting with a space),
+/// as used by git's `gpgsig` header.
 fn parse_headers(data: &[u8], pos: &mut usize) -> Result<Vec<Header>, String> {
     let mut headers = Vec::new();
     loop {
@@ -46,6 +49,21 @@ fn parse_headers(data: &[u8], pos: &mut usize) -> Result<Vec<Header>, String> {
         match header {
             Some(h) => headers.push(h),
             None => break,
+        }
+        // Fold continuation lines (leading space) into the previous header.
+        while *pos < data.len() && data[*pos] == b' ' {
+            let start = *pos;
+            let newline_pos = data[start..]
+                .iter()
+                .position(|&b| b == NEWLINE_BYTE)
+                .ok_or_else(|| "cannot parse continuation header: no newline found".to_string())?;
+            let line = std::str::from_utf8(&data[start..start + newline_pos])
+                .map_err(|e| format!("invalid continuation header: {}", e))?;
+            *pos = start + newline_pos + 1;
+            if let Some(last) = headers.last_mut() {
+                last.value.push('\n');
+                last.value.push_str(line);
+            }
         }
     }
     Ok(headers)
