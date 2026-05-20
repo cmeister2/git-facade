@@ -22,7 +22,7 @@ clap = { version = "4", features = ["derive"] }
 hex = "0.4"
 rayon = "1"
 sha1 = "0.10"
-wgpu-sha1 = { version = "0.1.0", path = "../wgpu-sha1" }
+wgpu-sha1 = { version = "0.2.0", path = "../wgpu-sha1" }
 
 [dev-dependencies]
 tempfile = "3"
