@@ -1,6 +1,6 @@
 //! Solver benchmarks.
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use sha1::{Digest, Sha1};
 
 use git_facade::commit::parse_git_commit_object;
@@ -8,7 +8,7 @@ use git_facade::solver::concurrent::ConcurrentSolver;
 use git_facade::solver::gpu::GpuSolver;
 use git_facade::solver::singlethreaded::SingleThreadedSolver;
 use git_facade::solver::template::prepare_template;
-use git_facade::solver::DigestPrefixSolver;
+use git_facade::solver::{DigestPrefixSolver, HexPrefix};
 
 /// Test fixture: a raw commit object header and body.
 const RAW_HEADER_AND_BODY_OBJECT: &str = "tree e57181f20b062532907436169bb5823b6af2f099\n\
@@ -47,7 +47,7 @@ fn bench_solver_singlethreaded(c: &mut Criterion) {
     c.bench_function("solver_singlethreaded", |b| {
         b.iter(|| {
             let solver = SingleThreadedSolver::with_range(0, 4096 * 1024);
-            solver.solve(&tpl, &[0x88, 0x70]).unwrap();
+            solver.solve(&tpl, &HexPrefix::full(&[0x88, 0x70])).unwrap();
         });
     });
 }
@@ -60,7 +60,7 @@ fn bench_solver_concurrent(c: &mut Criterion) {
     c.bench_function("solver_concurrent", |b| {
         b.iter(|| {
             let solver = ConcurrentSolver::new();
-            solver.solve(&tpl, &[0x88, 0x70]).unwrap();
+            solver.solve(&tpl, &HexPrefix::full(&[0x88, 0x70])).unwrap();
         });
     });
 }
@@ -80,7 +80,9 @@ fn bench_solver_gpu(c: &mut Criterion) {
 
     c.bench_function("solver_gpu", |b| {
         b.iter(|| {
-            gpu_solver.solve(&tpl, &[0x88, 0x70]).unwrap();
+            gpu_solver
+                .solve(&tpl, &HexPrefix::full(&[0x88, 0x70]))
+                .unwrap();
         });
     });
 }

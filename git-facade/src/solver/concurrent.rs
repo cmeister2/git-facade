@@ -1,13 +1,13 @@
 //! Multi-threaded brute-force solver using rayon.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rayon::prelude::*;
 
 use crate::digest::hex_encode_digest;
 use crate::solver::template::ObjectTemplate;
-use crate::solver::{has_prefix, CommitObject, DigestPrefixSolver, SolverError};
+use crate::solver::{CommitObject, DigestPrefixSolver, HexPrefix, SolverError, has_prefix};
 
 /// Number of salts each work unit processes before returning to the pool.
 const CHUNK_SIZE: u64 = 4096;
@@ -29,7 +29,11 @@ impl ConcurrentSolver {
 }
 
 impl DigestPrefixSolver for ConcurrentSolver {
-    fn solve(&self, template: &ObjectTemplate, prefix: &[u8]) -> Result<CommitObject, SolverError> {
+    fn solve(
+        &self,
+        template: &ObjectTemplate,
+        prefix: &HexPrefix,
+    ) -> Result<CommitObject, SolverError> {
         let found = Arc::new(AtomicBool::new(false));
 
         let num_chunks = (u64::MAX / CHUNK_SIZE) + 1;
@@ -90,9 +94,8 @@ mod tests {
         let tpl = prepare_template(&obj).unwrap();
 
         let solver = ConcurrentSolver::new();
-        let prefix = [0x88, 0x70];
 
-        let result = solver.solve(&tpl, &prefix).unwrap();
+        let result = solver.solve(&tpl, &HexPrefix::full(&[0x88, 0x70])).unwrap();
         let hash_str = result.hash.as_str();
         assert!(
             hash_str.starts_with("8870"),
@@ -107,9 +110,8 @@ mod tests {
         let tpl = prepare_template(&obj).unwrap();
 
         let solver = ConcurrentSolver::new();
-        let prefix = [0x88, 0x70];
 
-        let result = solver.solve(&tpl, &prefix).unwrap();
+        let result = solver.solve(&tpl, &HexPrefix::full(&[0x88, 0x70])).unwrap();
 
         use sha1::{Digest, Sha1};
         let actual_hash = Sha1::digest(&result.raw);
@@ -123,9 +125,10 @@ mod tests {
         let tpl = prepare_template(&obj).unwrap();
 
         let solver = ConcurrentSolver::new();
-        let prefix = [0xca, 0xfe, 0x00];
 
-        let result = solver.solve(&tpl, &prefix).unwrap();
+        let result = solver
+            .solve(&tpl, &HexPrefix::full(&[0xca, 0xfe, 0x00]))
+            .unwrap();
         let hash_str = result.hash.as_str();
         assert!(
             hash_str.starts_with("cafe00"),

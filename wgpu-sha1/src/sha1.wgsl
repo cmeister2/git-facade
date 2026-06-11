@@ -13,6 +13,7 @@ struct Params {
     salt_base_hi: u32,
     total_len_bytes: u32,
     dispatch_groups_x: u32,
+    half_byte: u32,
 }
 
 struct FindResult {
@@ -308,6 +309,17 @@ fn check_prefix(state: array<u32, 5>) -> bool {
             return false;
         }
     }
+    // Compare the high nibble of the next byte for odd-length hex prefixes
+    if params.half_byte != 0u {
+        let byte_idx = prefix_len;
+        let word_idx = byte_idx / 4u;
+        let byte_pos = byte_idx % 4u;
+        let shift = 24u - byte_pos * 8u;
+        let nibble_mask = 0xF0u << shift;
+        if (state[word_idx] & nibble_mask) != (aux_data[word_idx] & nibble_mask) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -332,7 +344,7 @@ fn find_prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
         salt_hi += 1u;
     }
 
-    let prefix_state_offset = (params.prefix_len + 3u) / 4u;
+    let prefix_state_offset = (params.prefix_len + params.half_byte + 3u) / 4u;
     let state = sha1_of_template(salt_lo, salt_hi, prefix_state_offset);
 
     if check_prefix(state) {

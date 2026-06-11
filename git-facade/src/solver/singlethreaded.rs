@@ -2,7 +2,7 @@
 
 use crate::digest::hex_encode_digest;
 use crate::solver::template::ObjectTemplate;
-use crate::solver::{has_prefix, CommitObject, DigestPrefixSolver, SolverError};
+use crate::solver::{CommitObject, DigestPrefixSolver, HexPrefix, SolverError, has_prefix};
 
 /// A single-threaded brute-force solver that iterates over a salt range.
 pub struct SingleThreadedSolver {
@@ -40,7 +40,11 @@ impl SingleThreadedSolver {
 }
 
 impl DigestPrefixSolver for SingleThreadedSolver {
-    fn solve(&self, template: &ObjectTemplate, prefix: &[u8]) -> Result<CommitObject, SolverError> {
+    fn solve(
+        &self,
+        template: &ObjectTemplate,
+        prefix: &HexPrefix,
+    ) -> Result<CommitObject, SolverError> {
         let mut tpl = template.clone();
         let hasher = tpl.incremental_hasher();
         for salt in self.salt_start..self.salt_end {
@@ -81,9 +85,8 @@ mod tests {
         let tpl = prepare_template(&obj).unwrap();
 
         let solver = SingleThreadedSolver::with_range(0, 4096 * 1024);
-        let prefix = [0x88, 0x70];
 
-        let result = solver.solve(&tpl, &prefix).unwrap();
+        let result = solver.solve(&tpl, &HexPrefix::full(&[0x88, 0x70])).unwrap();
         assert_eq!(&result.hash.0[..4], b"8870");
     }
 
@@ -93,9 +96,8 @@ mod tests {
         let tpl = prepare_template(&obj).unwrap();
 
         let solver = SingleThreadedSolver::with_range(0, 4096);
-        let prefix = [0x00];
 
-        let result = solver.solve(&tpl, &prefix).unwrap();
+        let result = solver.solve(&tpl, &HexPrefix::full(&[0x00])).unwrap();
         assert_eq!(&result.hash.0[..2], b"00");
     }
 
@@ -104,11 +106,9 @@ mod tests {
         let obj = parse_git_commit_object(RAW_HEADER_AND_BODY_OBJECT.as_bytes()).unwrap();
         let tpl = prepare_template(&obj).unwrap();
 
-        // Very small range with unlikely prefix
         let solver = SingleThreadedSolver::with_range(0, 1);
-        let prefix = [0xff, 0xff, 0xff, 0xff];
 
-        let result = solver.solve(&tpl, &prefix);
+        let result = solver.solve(&tpl, &HexPrefix::full(&[0xff, 0xff, 0xff, 0xff]));
         assert!(matches!(result, Err(SolverError::ExhaustedSalts)));
     }
 
@@ -118,11 +118,9 @@ mod tests {
         let tpl = prepare_template(&obj).unwrap();
 
         let solver = SingleThreadedSolver::with_range(0, 4096 * 1024);
-        let prefix = [0x88, 0x70];
 
-        let result = solver.solve(&tpl, &prefix).unwrap();
+        let result = solver.solve(&tpl, &HexPrefix::full(&[0x88, 0x70])).unwrap();
 
-        // Verify that hashing the raw bytes produces the reported hash
         use sha1::{Digest, Sha1};
         let actual_hash = Sha1::digest(&result.raw);
         let actual_hex = hex::encode(actual_hash);
@@ -131,19 +129,31 @@ mod tests {
 
     #[test]
     fn test_solve_parity_with_go_native_test() {
-        // The Go native test solves prefix [0x88, 0x70] with salt range 0..4096*1024
-        // and asserts the hash starts with "8870". We do the same.
         let obj = parse_git_commit_object(RAW_HEADER_AND_BODY_OBJECT.as_bytes()).unwrap();
         let tpl = prepare_template(&obj).unwrap();
 
         let solver = SingleThreadedSolver::with_range(0, 4096 * 1024);
-        let prefix = [0x88, 0x70];
 
-        let result = solver.solve(&tpl, &prefix).unwrap();
+        let result = solver.solve(&tpl, &HexPrefix::full(&[0x88, 0x70])).unwrap();
         let hash_str = result.hash.as_str();
         assert!(
             hash_str.starts_with("8870"),
             "expected hash to start with 8870, got {}",
+            hash_str
+        );
+    }
+
+    #[test]
+    fn test_solve_half_byte_prefix() {
+        let obj = parse_git_commit_object(RAW_HEADER_AND_BODY_OBJECT.as_bytes()).unwrap();
+        let tpl = prepare_template(&obj).unwrap();
+
+        let solver = SingleThreadedSolver::with_range(0, 4096 * 1024);
+        let result = solver.solve(&tpl, &HexPrefix::half(&[0x80])).unwrap();
+        let hash_str = result.hash.as_str();
+        assert!(
+            hash_str.starts_with('8'),
+            "expected hash to start with 8, got {}",
             hash_str
         );
     }

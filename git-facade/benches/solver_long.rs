@@ -5,13 +5,13 @@
 
 use std::time::Duration;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 use git_facade::commit::parse_git_commit_object;
 use git_facade::solver::concurrent::ConcurrentSolver;
 use git_facade::solver::gpu::GpuSolver;
 use git_facade::solver::template::prepare_template;
-use git_facade::solver::DigestPrefixSolver;
+use git_facade::solver::{DigestPrefixSolver, HexPrefix};
 
 /// Test fixture: a raw commit object header and body.
 const RAW_HEADER_AND_BODY_OBJECT: &str = "tree e57181f20b062532907436169bb5823b6af2f099\n\
@@ -32,7 +32,7 @@ fn bench_concurrent_long(c: &mut Criterion) {
     c.bench_function("concurrent_3byte", |b| {
         b.iter(|| {
             let solver = ConcurrentSolver::new();
-            solver.solve(&tpl, &LONG_PREFIX).unwrap();
+            solver.solve(&tpl, &HexPrefix::full(&LONG_PREFIX)).unwrap();
         });
     });
 }
@@ -52,7 +52,9 @@ fn bench_gpu_long(c: &mut Criterion) {
 
     c.bench_function("gpu_3byte", |b| {
         b.iter(|| {
-            gpu_solver.solve(&tpl, &LONG_PREFIX).unwrap();
+            gpu_solver
+                .solve(&tpl, &HexPrefix::full(&LONG_PREFIX))
+                .unwrap();
         });
     });
 }

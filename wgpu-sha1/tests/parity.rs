@@ -159,7 +159,7 @@ fn test_find_prefix_matches_cpu() {
     let prefix = [0x88u8, 0x70];
 
     let result = gpu
-        .find_prefix(&gpu_template, &prefix, 0, 4096 * 1024)
+        .find_prefix(&gpu_template, &prefix, false, 0, 4096 * 1024)
         .expect("GPU find_prefix failed");
 
     let result = result.expect("GPU should find a match within 4M salts");
@@ -198,7 +198,7 @@ fn test_find_prefix_across_u32_salt_boundary() {
     let prefix = [target_digest[0]];
 
     let result = gpu
-        .find_prefix(&gpu_template, &prefix, salt_base, batch_size)
+        .find_prefix(&gpu_template, &prefix, false, salt_base, batch_size)
         .expect("GPU find_prefix failed")
         .expect("GPU should find a one-byte prefix match near u32 boundary");
 
@@ -211,4 +211,43 @@ fn test_find_prefix_across_u32_salt_boundary() {
     let full_bytes = make_template_with_salt(&template_bytes, salt_offset, result.salt);
     let cpu_digest = cpu_sha1(&full_bytes);
     assert_eq!(cpu_digest[0], prefix[0]);
+}
+
+#[test]
+fn test_find_prefix_half_byte() {
+    let gpu = match GpuSha1::new() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("skipping GPU test (no adapter): {}", e);
+            return;
+        }
+    };
+
+    let (template_bytes, salt_offset) = make_test_template();
+    let gpu_template = GpuTemplate::from_bytes(&template_bytes, salt_offset);
+
+    // "887" = 3 hex chars → 1 full byte [0x88] + half byte 0x70 (high nibble 7)
+    // 12 bits → ~4K expected attempts, well within 4M budget
+    let prefix = [0x88, 0x70];
+
+    let result = gpu
+        .find_prefix(&gpu_template, &prefix, true, 0, 4096 * 1024)
+        .expect("GPU find_prefix failed");
+
+    let result = result.expect("GPU should find a half-byte match within 4M salts");
+
+    let full_bytes = make_template_with_salt(&template_bytes, salt_offset, result.salt);
+    let cpu_digest = cpu_sha1(&full_bytes);
+
+    assert_eq!(
+        cpu_digest[0], 0x88,
+        "byte 0 should be 0x88, got {:#04x}",
+        cpu_digest[0]
+    );
+    assert_eq!(
+        cpu_digest[1] & 0xF0,
+        0x70,
+        "high nibble of byte 1 should be 0x7_, got {:#04x}",
+        cpu_digest[1]
+    );
 }

@@ -49,7 +49,7 @@ struct Params {
     salt_offset_bytes: u32,
     /// Byte length of the suffix stored in `template_data`.
     template_len_bytes: u32,
-    /// Number of prefix bytes to match.
+    /// Number of full prefix bytes to match.
     prefix_len: u32,
     /// Number of invocations in this dispatch.
     batch_size: u32,
@@ -61,6 +61,8 @@ struct Params {
     total_len_bytes: u32,
     /// Number of workgroups dispatched in the x dimension.
     dispatch_groups_x: u32,
+    /// 1 if the prefix ends on a nibble boundary (odd hex chars), 0 otherwise.
+    half_byte: u32,
 }
 
 /// Result struct read back from the GPU.
@@ -286,6 +288,7 @@ impl GpuSha1 {
         &'a self,
         template: &GpuTemplate,
         prefix: &[u8],
+        half_byte: bool,
         batch_size: u32,
     ) -> GpuPrefixSearch<'a> {
         let prefix_words = bytes_to_be_words(prefix);
@@ -296,15 +299,17 @@ impl GpuSha1 {
         let total_workgroups = batch_size.div_ceil(WORKGROUP_SIZE);
         let dispatch_groups_y = total_workgroups.div_ceil(dispatch_groups_x);
 
+        let full_prefix_len = prefix.len() as u32 - u32::from(half_byte);
         let params = Params {
             salt_offset_bytes: template.salt_offset_bytes,
             template_len_bytes: template.suffix_bytes,
-            prefix_len: prefix.len() as u32,
+            prefix_len: full_prefix_len,
             batch_size,
             salt_base_lo: 0,
             salt_base_hi: 0,
             total_len_bytes: template.total_bytes,
             dispatch_groups_x,
+            half_byte: u32::from(half_byte),
         };
 
         let template_buf = self
@@ -414,6 +419,7 @@ impl GpuSha1 {
         &self,
         template: &GpuTemplate,
         prefix: &[u8],
+        half_byte: bool,
         salt_base: u64,
         batch_size: u32,
     ) -> Result<Option<FindResult>, GpuError> {
@@ -421,15 +427,17 @@ impl GpuSha1 {
         let mut prefix_and_state = prefix_words;
         prefix_and_state.extend_from_slice(&template.prefix_state);
 
+        let full_prefix_len = prefix.len() as u32 - u32::from(half_byte);
         let params = Params {
             salt_offset_bytes: template.salt_offset_bytes,
             template_len_bytes: template.suffix_bytes,
-            prefix_len: prefix.len() as u32,
+            prefix_len: full_prefix_len,
             batch_size,
             salt_base_lo: salt_base as u32,
             salt_base_hi: (salt_base >> 32) as u32,
             total_len_bytes: template.total_bytes,
             dispatch_groups_x: dispatch_groups_x(batch_size),
+            half_byte: u32::from(half_byte),
         };
 
         let template_buf = self
@@ -583,6 +591,7 @@ impl GpuSha1 {
             salt_base_hi: 0,
             total_len_bytes: template.total_bytes,
             dispatch_groups_x: num_salts as u32,
+            half_byte: 0,
         };
 
         let template_buf = self

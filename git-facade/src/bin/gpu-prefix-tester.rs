@@ -6,9 +6,9 @@ use clap::Parser;
 use git_facade::commit::parse_git_commit_object;
 use git_facade::digest::hex_encode_digest;
 use git_facade::git;
-use git_facade::solver::has_prefix;
-use git_facade::solver::template::{prepare_template, ObjectTemplate};
-use wgpu_sha1::{GpuSha1, GpuTemplate, DEFAULT_BATCH_SIZE};
+use git_facade::solver::template::{ObjectTemplate, prepare_template};
+use git_facade::solver::{HexPrefix, has_prefix};
+use wgpu_sha1::{DEFAULT_BATCH_SIZE, GpuSha1, GpuTemplate};
 
 /// Command-line arguments for the GPU prefix tester.
 #[derive(Parser)]
@@ -167,10 +167,14 @@ fn time_prefix(
     let start = Instant::now();
     let mut salt_base = 0u64;
     let mut batches = 0u64;
+    let hex_prefix = HexPrefix {
+        bytes: prefix.to_vec(),
+        half_byte: false,
+    };
 
     loop {
         let result = gpu
-            .find_prefix(gpu_template, prefix, salt_base, batch_size)
+            .find_prefix(gpu_template, prefix, false, salt_base, batch_size)
             .map_err(|error| error.to_string())?;
         batches += 1;
 
@@ -179,7 +183,7 @@ fn time_prefix(
             let mut solved_template = template.clone();
             solved_template.set_salt(found.salt);
             let digest = solved_template.sum();
-            if !has_prefix(&digest, prefix) {
+            if !has_prefix(&digest, &hex_prefix) {
                 return Err(format!(
                     "GPU returned salt {} but CPU hash {} does not match prefix {}",
                     found.salt,

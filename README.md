@@ -26,17 +26,17 @@ git-facade --update-ref --prefix c0ffee
 
 ## Options
 
-| Flag           | Default      | Description                                                              |
-|----------------|--------------|--------------------------------------------------------------------------|
-| `--prefix`     | `c0ffee`     | Hex prefix to brute-force or verify (even-length, lowercase `[0-9a-f]`) |
+| Flag           | Default      | Description                                                                |
+|----------------|--------------|----------------------------------------------------------------------------|
+| `--prefix`     | `c0ffee`     | Hex prefix to brute-force or verify (lowercase `[0-9a-f]`)                 |
 | `--solver`     | `concurrent` | Solver to use when brute-forcing: `concurrent`, `singlethreaded`, or `gpu` |
-| `--salt`       | unset        | Apply an explicit salt value (1-16 hex digits) instead of brute-forcing  |
-| `--salt-only`  | `false`      | Brute-force a matching salt and print only the salt                      |
-| `--update-ref` | `false`      | Update HEAD to point to the new commit object                            |
+| `--salt`       | unset        | Apply an explicit salt value (1-16 hex digits) instead of brute-forcing    |
+| `--salt-only`  | `false`      | Brute-force a matching salt and print only the salt                        |
+| `--update-ref` | `false`      | Update HEAD to point to the new commit object                              |
 
 ## How it works
 
-This is a faithful port of the [Go implementation](https://github.com/trichner/gitc0ffee) to Rust:
+This was a port of the [Go implementation](https://github.com/trichner/gitc0ffee) to Rust:
 
 1. Read the latest commit digest (`git rev-parse HEAD`).
 2. Parse the raw commit object (`git cat-file -p <digest>`).
@@ -48,6 +48,8 @@ You can also split that into two steps:
 
 1. Run `git-facade --prefix ... --salt-only` to brute-force and print a reusable salt.
 2. Run `git-facade --prefix ... --salt <value> --update-ref` later to recreate and apply the same vanity commit without brute-forcing again.
+
+On top of the original gitc0ffee port, gpu solving was also added and signed commit support was added.
 
 ## Performance
 
@@ -62,9 +64,9 @@ Prefixes beyond 8 characters may not finish in useful time on CPU.
 
 ## Prefix ideas
 
-All even-length hexadecimal prefixes work (`[0-9a-f]{2,40}`). For inspiration, see [Hexspeak](https://en.wikipedia.org/wiki/Hexspeak):
+Any hexadecimal prefix works, even or odd length (`[0-9a-f]{1,40}`). For inspiration, see [Hexspeak](https://en.wikipedia.org/wiki/Hexspeak):
 
-`facade`, `c0ffee`, `cafe`, `badc0de`, `deadbeef`, `0ff1ce`, `dec0de`, `defaced`
+`facade`, `facade0`, `c0ffee`, `cafe`, `badc0de`, `deadbeef`, `0ff1ce`, `dec0de`, `defaced`
 
 ## Credits
 

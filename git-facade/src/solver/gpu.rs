@@ -2,11 +2,11 @@
 
 use sha1::{Digest, Sha1};
 
-use crate::digest::{hex_encode_digest, ObjectDigest};
+use crate::digest::{ObjectDigest, hex_encode_digest};
 use crate::solver::template::ObjectTemplate;
-use crate::solver::{CommitObject, DigestPrefixSolver, SolverError};
+use crate::solver::{CommitObject, DigestPrefixSolver, HexPrefix, SolverError};
 
-use wgpu_sha1::{GpuSha1, GpuTemplate, DEFAULT_BATCH_SIZE};
+use wgpu_sha1::{DEFAULT_BATCH_SIZE, GpuSha1, GpuTemplate};
 
 /// A solver that offloads SHA1 brute-forcing to the GPU via wgpu.
 pub struct GpuSolver {
@@ -27,13 +27,20 @@ impl GpuSolver {
 }
 
 impl DigestPrefixSolver for GpuSolver {
-    fn solve(&self, template: &ObjectTemplate, prefix: &[u8]) -> Result<CommitObject, SolverError> {
+    fn solve(
+        &self,
+        template: &ObjectTemplate,
+        prefix: &HexPrefix,
+    ) -> Result<CommitObject, SolverError> {
         let gpu_template = GpuTemplate::from_bytes(&template.bytes, template.salt_offset);
 
         let batch_size = DEFAULT_BATCH_SIZE;
-        let search = self
-            .gpu
-            .create_prefix_search(&gpu_template, prefix, batch_size);
+        let search = self.gpu.create_prefix_search(
+            &gpu_template,
+            &prefix.bytes,
+            prefix.half_byte,
+            batch_size,
+        );
         let mut salt_base: u64 = 0;
 
         loop {
@@ -50,7 +57,15 @@ impl DigestPrefixSolver for GpuSolver {
                 digest.copy_from_slice(&cpu_hash);
                 let obj_digest = ObjectDigest(digest);
 
-                if digest[..prefix.len()] == *prefix {
+                let full = if prefix.half_byte {
+                    prefix.bytes.len() - 1
+                } else {
+                    prefix.bytes.len()
+                };
+                let matches = digest[..full] == prefix.bytes[..full]
+                    && (!prefix.half_byte || (digest[full] & 0xF0) == (prefix.bytes[full] & 0xF0));
+
+                if matches {
                     let hex_digest = hex_encode_digest(&obj_digest);
                     return Ok(CommitObject {
                         salt: found.salt,

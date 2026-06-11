@@ -5,14 +5,14 @@ use std::time::Instant;
 use clap::Parser;
 
 use git_facade::commit::parse_git_commit_object;
-use git_facade::digest::hex_encode_digest;
 use git_facade::digest::HexObjectDigest;
+use git_facade::digest::hex_encode_digest;
 use git_facade::git;
 use git_facade::solver::concurrent::ConcurrentSolver;
 use git_facade::solver::gpu::GpuSolver;
 use git_facade::solver::singlethreaded::SingleThreadedSolver;
 use git_facade::solver::template::prepare_template;
-use git_facade::solver::{CommitObject, DigestPrefixSolver};
+use git_facade::solver::{CommitObject, DigestPrefixSolver, HexPrefix, has_prefix};
 
 /// CLI arguments.
 #[derive(Parser)]
@@ -63,7 +63,7 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
 
-    let prefix = hex_string_to_bytes(&cli.prefix).unwrap_or_else(|e| {
+    let prefix = parse_hex_prefix(&cli.prefix).unwrap_or_else(|e| {
         eprintln!("invalid prefix {:?}: {}", cli.prefix, e);
         std::process::exit(1);
     });
@@ -155,18 +155,18 @@ fn main() {
 fn apply_explicit_salt(
     template: &git_facade::solver::template::ObjectTemplate,
     salt: u64,
-    prefix: &[u8],
+    prefix: &HexPrefix,
 ) -> Result<CommitObject, String> {
     let mut tpl = template.clone();
     tpl.set_salt(salt);
     let digest = tpl.sum();
 
-    if !prefix.is_empty() && digest.0[..prefix.len()] != *prefix {
+    if !prefix.bytes.is_empty() && !has_prefix(&digest, prefix) {
         return Err(format!(
             "provided salt {:016x} produced digest {} which does not match requested prefix {}",
             salt,
             hex_encode_digest(&digest),
-            hex::encode(prefix)
+            hex::encode(&prefix.bytes)
         ));
     }
 
@@ -203,24 +203,28 @@ fn write_commit_object(payload: &[u8], expected_hash: &HexObjectDigest) -> Resul
     Ok(())
 }
 
-/// Converts a hex string to bytes (e.g. "c0ffee" -> [0xc0, 0xff, 0xee]).
-fn hex_string_to_bytes(s: &str) -> Result<Vec<u8>, String> {
-    let bytes = s.as_bytes();
-    if !bytes.len().is_multiple_of(2) {
-        return Err(format!(
-            "odd length hex encoded bytes: len({}) = {}",
-            s,
-            bytes.len()
-        ));
+/// Parses a hex string into a `HexPrefix`, supporting both even and odd lengths.
+///
+/// Even-length: "c0ffee" → bytes `[0xc0, 0xff, 0xee]`, `half_byte = false`
+/// Odd-length:  "facade0" → bytes `[0xfa, 0xca, 0xde, 0x00]`, `half_byte = true`
+fn parse_hex_prefix(s: &str) -> Result<HexPrefix, String> {
+    let raw = s.as_bytes();
+    let half_byte = raw.len() % 2 == 1;
+
+    let pair_count = raw.len() / 2;
+    let mut bytes = Vec::with_capacity(pair_count + usize::from(half_byte));
+    for i in 0..pair_count {
+        let upper = hex_rune_to_byte(raw[i * 2])?;
+        let lower = hex_rune_to_byte(raw[i * 2 + 1])?;
+        bytes.push((upper << 4) | lower);
     }
 
-    let mut result = Vec::with_capacity(bytes.len() / 2);
-    for i in (0..bytes.len()).step_by(2) {
-        let upper = hex_rune_to_byte(bytes[i])?;
-        let lower = hex_rune_to_byte(bytes[i + 1])?;
-        result.push((upper << 4) | lower);
+    if half_byte {
+        let nibble = hex_rune_to_byte(raw[raw.len() - 1])?;
+        bytes.push(nibble << 4);
     }
-    Ok(result)
+
+    Ok(HexPrefix { bytes, half_byte })
 }
 
 /// Parses a 1-16 digit hexadecimal salt value.
@@ -258,36 +262,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hex_string_to_bytes_valid() {
-        assert_eq!(
-            hex_string_to_bytes("c0ffee").unwrap(),
-            vec![0xc0, 0xff, 0xee]
-        );
-        assert_eq!(hex_string_to_bytes("00").unwrap(), vec![0x00]);
-        assert_eq!(hex_string_to_bytes("ff").unwrap(), vec![0xff]);
-        assert_eq!(hex_string_to_bytes("cafe").unwrap(), vec![0xca, 0xfe]);
-        assert_eq!(
-            hex_string_to_bytes("deadbeef").unwrap(),
-            vec![0xde, 0xad, 0xbe, 0xef]
-        );
+    fn test_parse_hex_prefix_even() {
+        let p = parse_hex_prefix("c0ffee").unwrap();
+        assert_eq!(p.bytes, vec![0xc0, 0xff, 0xee]);
+        assert!(!p.half_byte);
+
+        let p = parse_hex_prefix("00").unwrap();
+        assert_eq!(p.bytes, vec![0x00]);
+        assert!(!p.half_byte);
+
+        let p = parse_hex_prefix("deadbeef").unwrap();
+        assert_eq!(p.bytes, vec![0xde, 0xad, 0xbe, 0xef]);
+        assert!(!p.half_byte);
     }
 
     #[test]
-    fn test_hex_string_to_bytes_odd_length() {
-        assert!(hex_string_to_bytes("c0f").is_err());
-        assert!(hex_string_to_bytes("a").is_err());
+    fn test_parse_hex_prefix_odd() {
+        let p = parse_hex_prefix("facade0").unwrap();
+        assert_eq!(p.bytes, vec![0xfa, 0xca, 0xde, 0x00]);
+        assert!(p.half_byte);
+
+        let p = parse_hex_prefix("a").unwrap();
+        assert_eq!(p.bytes, vec![0xa0]);
+        assert!(p.half_byte);
+
+        let p = parse_hex_prefix("c0f").unwrap();
+        assert_eq!(p.bytes, vec![0xc0, 0xf0]);
+        assert!(p.half_byte);
     }
 
     #[test]
-    fn test_hex_string_to_bytes_invalid_chars() {
-        assert!(hex_string_to_bytes("zz").is_err());
-        assert!(hex_string_to_bytes("GG").is_err());
-        assert!(hex_string_to_bytes("c0FFEE").is_err());
+    fn test_parse_hex_prefix_invalid_chars() {
+        assert!(parse_hex_prefix("zz").is_err());
+        assert!(parse_hex_prefix("GG").is_err());
+        assert!(parse_hex_prefix("c0FFEE").is_err());
     }
 
     #[test]
-    fn test_hex_string_to_bytes_empty() {
-        assert_eq!(hex_string_to_bytes("").unwrap(), Vec::<u8>::new());
+    fn test_parse_hex_prefix_empty() {
+        let p = parse_hex_prefix("").unwrap();
+        assert_eq!(p.bytes, Vec::<u8>::new());
+        assert!(!p.half_byte);
     }
 
     #[test]
