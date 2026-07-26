@@ -10,7 +10,7 @@ categories = ["cryptography", "algorithms"]
 
 [dependencies]
 wgpu = "29"
-pollster = "0.4"
+pollster = "1.0"
 bytemuck = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
