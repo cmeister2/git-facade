@@ -14,6 +14,6 @@ pollster = "1.0"
 bytemuck = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-sha1 = "0.10"
+sha1 = "0.11"
 hex = "0.4"
 
