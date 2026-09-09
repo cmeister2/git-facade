@@ -22,12 +22,12 @@ path = "src/bin/gpu-prefix-tester.rs"
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
 rayon = "1"
-sha1 = "0.10"
+sha1 = "0.11"
 wgpu-sha1 = { version = "0.3.0", path = "../wgpu-sha1" }
 
 [dev-dependencies]
 tempfile = "3"
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "solver"
