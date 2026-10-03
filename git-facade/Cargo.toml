@@ -26,8 +26,8 @@ sha1 = "0.10"
 wgpu-sha1 = { version = "0.3.0", path = "../wgpu-sha1" }
 
 [dev-dependencies]
-tempfile = "3"
-criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "=3.27.0"
+criterion = { version = "=0.5.1", features = ["html_reports"] }
 
 [[bench]]
 name = "solver"
