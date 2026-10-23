@@ -799,7 +799,7 @@ fn sha1_initial_state() -> [u32; 5] {
 fn sha1_prefix_state(prefix_blocks: &[u8]) -> [u32; 5] {
     debug_assert_eq!(prefix_blocks.len() % 64, 0);
     let mut state = sha1_initial_state();
-    for block in prefix_blocks.chunks_exact(64) {
+    for block in prefix_blocks.as_chunks::<64>().0 {
         sha1_compress_cpu(&mut state, block);
     }
     state
@@ -810,8 +810,8 @@ fn sha1_compress_cpu(state: &mut [u32; 5], block: &[u8]) {
     debug_assert_eq!(block.len(), 64);
 
     let mut schedule = [0u32; 80];
-    for (word, bytes) in schedule.iter_mut().take(16).zip(block.chunks_exact(4)) {
-        *word = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    for (word, bytes) in schedule.iter_mut().take(16).zip(block.as_chunks::<4>().0) {
+        *word = u32::from_be_bytes(*bytes);
     }
     for i in 16..80 {
         schedule[i] = (schedule[i - 3] ^ schedule[i - 8] ^ schedule[i - 14] ^ schedule[i - 16])
@@ -863,11 +863,12 @@ fn read_buffer<T: Pod>(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Result<T
         .map_err(|e| GpuError::Other(format!("buffer map recv failed: {}", e)))?
         .map_err(|e| GpuError::Other(format!("buffer map failed: {}", e)))?;
 
-    let data = slice.get_mapped_range();
-    let result: T = *bytemuck::from_bytes(&data[..std::mem::size_of::<T>()]);
-    drop(data);
+    let result = slice
+        .get_mapped_range()
+        .map(|data| *bytemuck::from_bytes(&data[..std::mem::size_of::<T>()]))
+        .map_err(|e| GpuError::Other(format!("buffer view failed: {e}")));
     buffer.unmap();
-    Ok(result)
+    result
 }
 
 /// Reads a vec of `T` from a mappable buffer.
@@ -886,10 +887,11 @@ fn read_buffer_vec<T: Pod>(
         .map_err(|e| GpuError::Other(format!("buffer map recv failed: {}", e)))?
         .map_err(|e| GpuError::Other(format!("buffer map failed: {}", e)))?;
 
-    let data = slice.get_mapped_range();
     let byte_len = count * std::mem::size_of::<T>();
-    let result: Vec<T> = bytemuck::cast_slice(&data[..byte_len]).to_vec();
-    drop(data);
+    let result = slice
+        .get_mapped_range()
+        .map(|data| bytemuck::cast_slice(&data[..byte_len]).to_vec())
+        .map_err(|e| GpuError::Other(format!("buffer view failed: {e}")));
     buffer.unmap();
-    Ok(result)
+    result
 }
